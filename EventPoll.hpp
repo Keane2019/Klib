@@ -93,7 +93,7 @@ public:
     void HandleRead(EventFile* ef)
     {
         PRINTCALL
-        int read = ef->read_buffer_->ReadFD(ef->fd_, 65536);
+        int read = ef->read_buffer_->ReadFD(ef->fd_, RING_BUFF_SIZE);
 
         if(read > 0)
         {
@@ -120,7 +120,7 @@ public:
     void HandleWrite(EventFile* ef)
     {
         PRINTCALL
-        ef->write_buffer_->WriteFD(ef->fd_, 65536);
+        ef->write_buffer_->WriteFD(ef->fd_, RING_BUFF_SIZE);
         if(ef->write_buffer_->GetDataLen() > 0)
             UpdateEventsInLoop(ef, EPOLLIN | EPOLLOUT, EPOLL_CTL_MOD);
         if(ef->write_buffer_->GetDataLen() == 0)

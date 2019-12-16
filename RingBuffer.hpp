@@ -9,6 +9,7 @@
 #include "LockUtils.hpp"
 
 #define MIN(x, y) x<y?x:y
+#define RING_BUFF_SIZE 65536
 
 
 class RingBuffer
@@ -26,7 +27,7 @@ private: //make it noncopyable
     RingBuffer& operator=(const RingBuffer& rhs);
 
 public:
-    RingBuffer(int nSize = 65536)
+    RingBuffer(int nSize = RING_BUFF_SIZE)
     :buffer_(NULL)
     ,size_(nSize)
     ,in_(0)
