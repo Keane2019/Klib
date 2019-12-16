@@ -213,7 +213,6 @@ private:
     void UpdateEventsInLoop(EventFile* ef, int events, int op)
     {
         struct epoll_event ev;
-        memset(&ev, 0, sizeof(ev));
         ev.events = events;
         ev.data.ptr = ef;
         ef->wait_events_ = events;
