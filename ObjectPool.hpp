@@ -9,11 +9,20 @@ template <class T>
 class ObjectPool
 {
 public:
+    ObjectPool()
+    :count_(0){}
 
     T* GetObj()
     {
         MutexLockGuard lock(mutex_);
-        if(list_.empty()) return new T();
+        
+        if(list_.empty()) 
+        {
+            T* obj = new T();
+            count_++;
+            return obj;
+        }
+
         T* obj = list_.front();
         list_.pop_front();
         return obj;
@@ -30,7 +39,14 @@ public:
         }
     }
 
+    int GetCount()
+    {
+        MutexLockGuard lock(mutex_);
+        return count_;
+    }
+
 private:
+    int count_;
     MutexLock mutex_;
     std::list<T*> list_;
 };

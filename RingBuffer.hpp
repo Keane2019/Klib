@@ -26,7 +26,7 @@ private: //make it noncopyable
     RingBuffer& operator=(const RingBuffer& rhs);
 
 public:
-    RingBuffer(int nSize)
+    RingBuffer(int nSize = 65536)
     :buffer_(NULL)
     ,size_(nSize)
     ,in_(0)
