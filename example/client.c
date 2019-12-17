@@ -1,13 +1,14 @@
 #include<stdio.h>
-#include<sys/types.h>
-#include<sys/socket.h>
 #include<unistd.h>
-#include<stdlib.h>
-#include<netinet/in.h>
-#include<arpa/inet.h>
-#include <string.h>
 
+#include "../Sockets.hpp"
 #include "../EventPoll.hpp"
+
+
+#define TEST_SIZE 1024
+int recved = 0;
+int sent = 0;
+char buff[TEST_SIZE];
 
 int main(int argc,const char* argv[])
 {
@@ -17,46 +18,41 @@ int main(int argc,const char* argv[])
         return 0;
     }
 
-    //创建一个用来通讯的socket
-    int sock = socket(AF_INET,SOCK_STREAM, 0);
+    int sock = ConnectServer(atoi(argv[2]), argv[1]);
     if(sock < 0)
     {
-        perror("socket");
-        return 1;
-    }
-
-    //需要connect的是对端的地址，因此这里定义服务器端的地址结构体
-    struct sockaddr_in server;
-    server.sin_family = AF_INET;
-    server.sin_port = htons(atoi(argv[2]));
-    server.sin_addr.s_addr = inet_addr(argv[1]);
-    socklen_t len = sizeof(struct sockaddr_in);
-    if(connect(sock, (struct sockaddr*)&server, len) < 0 )
-    {
         perror("connect");
-        return 2;
+        return -1;
     }
 
-    char str[1024];
-    int sent = 0;
+    EventThreadPool ep(1);
+    EventFile* ef = ep.RegisterSocket(sock);
 
     while(sent < 104857600)
     {
-        int send = write(sock, str, 1024);
-        if(send >= 0)
-        {
-            sent += send;
-        }
-        else
-        {
-            perror("write");
-            break;
-        }
-
-        //sleep(1);
+        ef->GetEventPoll()->SendMessage(ef, buff, TEST_SIZE);
+        sent += TEST_SIZE;
     }
 
-    printf("%d\n", sent);
+
+    // RingBuffer rb;
+    // while(sent < 1048576)
+    // {
+    //     rb.Put(buff,TEST_SIZE);
+    //     int send = rb.WriteFD(sock, TEST_SIZE);
+    //     printf("Send %d, Sum %d\n", send, sent);
+    //     if(send >= 0)
+    //     {
+    //         sent += send;
+    //     }
+    //     else
+    //     {
+    //         if(errno != EAGAIN)
+    //             break;
+    //     }
+    // }
+
+    printf("R:%d S:%d\n", recved, sent);
     //while(1) sleep(1);
     return 0;
 }

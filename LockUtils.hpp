@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <sys/time.h>
 #include <errno.h>
+#include <stdlib.h>
 
 #define MCHECK(ret) ({if(ret != 0) abort();})
 

@@ -11,6 +11,9 @@
 #include <string.h>
 #include <sys/eventfd.h>
 #include <signal.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+
 
 #include "RingBuffer.hpp"
 #include "ObjectPool.hpp"
@@ -93,38 +96,44 @@ public:
     void HandleRead(EventFile* ef)
     {
         PRINTCALL
-        int read = ef->read_buffer_->ReadFD(ef->fd_, RING_BUFF_SIZE);
+        int read_once = ef->read_buffer_->ReadFD(ef->fd_, RING_BUFF_SIZE);
+        int err = errno;
 
-        if(read > 0)
+        if(ef->read_buffer_->GetDataLen() > 0)
         {
-            if(messageCallback_) messageCallback_(ef);
-        }
-        else if(read == 0)
-        {
+            messageCallback_(ef);
+
             if(ef->read_buffer_->GetDataLen() > 0)
             {
-                if(messageCallback_) messageCallback_(ef);
-            }
-            else
-            {
-                HandleClose(ef);
+                AppendWork(std::bind(&EventPoll::HandleRead,
+                    this, ef));
+                return;
             }
         }
-        else
+
+        if(read_once == 0)
         {
-            if(errno == EAGAIN) return;
-            HandleError(ef);
+            HandleClose(ef);
+        }
+        else if(read_once < 0)
+        {
+            if(err != EAGAIN) HandleError(ef);
         }
     }
 
     void HandleWrite(EventFile* ef)
     {
         PRINTCALL
-        ef->write_buffer_->WriteFD(ef->fd_, RING_BUFF_SIZE);
+        int write_once = ef->write_buffer_->WriteFD(ef->fd_, RING_BUFF_SIZE);
+
         if(ef->write_buffer_->GetDataLen() > 0)
+        {
             UpdateEventsInLoop(ef, EPOLLIN | EPOLLOUT, EPOLL_CTL_MOD);
-        if(ef->write_buffer_->GetDataLen() == 0)
+        }
+        else
+        {
             UpdateEventsInLoop(ef, EPOLLIN, EPOLL_CTL_MOD);
+        } 
     }
 
     void HandleClose(EventFile* ef)
@@ -136,7 +145,7 @@ public:
     void HandleError(EventFile* ef)
     {
         PRINTERR
-        UnregisterSocketInLoop(ef);
+        UnregisterSocketInLoop(ef); 
     }
 
     void RegisterListenInQueue(int fd)
@@ -168,11 +177,11 @@ public:
         while(need_send > 0)
         {
             int send_once = ef->write_buffer_->Put(buff+(len - need_send), need_send);
-
+            
             if(send_once > 0)
             {
                 if(!ef->IsWriting())
-                    AppendWork(std::bind(&EventPoll::HandleWrite, this, ef));
+                    HandleWrite(ef);
 
                 need_send -= send_once;
             }
@@ -194,7 +203,7 @@ public:
     {
         RingBuffer* rb = ringBufferPool_.GetObj();
         rb->Clean();
-        return rb; 
+        return rb;
     }
 
     void ReleaseRingBuffer(RingBuffer* rb)
@@ -418,11 +427,6 @@ public:
         {
             pool_[i]->SetMessageCallback(cb);
         }
-    }
-
-    void SendMessage(EventFile* ef,const char* buff, unsigned int len)
-    {
-        ef->GetEventPoll()->SendMessage(ef, buff, len);
     }
 
     EventPoll* SelectEventPoll()
