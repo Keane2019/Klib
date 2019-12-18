@@ -35,6 +35,7 @@ struct EventFile
     int fd_;
     int revents_;
     int wait_events_;
+    bool closed_;
     RingBuffer* read_buffer_;
     RingBuffer* write_buffer_;
     EventPoll* event_poll_;
@@ -97,33 +98,21 @@ public:
     {
         PRINTCALL
         int read_once = ef->read_buffer_->ReadFD(ef->fd_, RING_BUFF_SIZE);
-        int err = errno;
 
-        if(ef->read_buffer_->GetDataLen() > 0)
+        if(read_once > 0)
         {
             messageCallback_(ef);
-
-            if(ef->read_buffer_->GetDataLen() > 0)
-            {
-                AppendWork(std::bind(&EventPoll::HandleRead,
-                    this, ef));
-                return;
-            }
         }
-
         if(read_once == 0)
         {
             HandleClose(ef);
-        }
-        else if(read_once < 0)
-        {
-            if(err != EAGAIN) HandleError(ef);
         }
     }
 
     void HandleWrite(EventFile* ef)
     {
         PRINTCALL
+        if(ef->closed_) return;
         int write_once = ef->write_buffer_->WriteFD(ef->fd_, RING_BUFF_SIZE);
 
         if(ef->write_buffer_->GetDataLen() > 0)
@@ -255,7 +244,7 @@ private:
         EventFile* ef = GetEventFile();
         ef->fd_ = fd;
         ef->event_poll_ = this;
-
+        ef->closed_ = false;
         if(!ef-> read_buffer_) ef->read_buffer_ = GetRingBuffer();
         if(!ef-> write_buffer_) ef->write_buffer_ = GetRingBuffer();
 
@@ -274,6 +263,7 @@ private:
     {
         MCHECK(::epoll_ctl(epollfd_, EPOLL_CTL_DEL, ef->fd_, NULL));
         ::close(ef->fd_);
+        ef->closed_ = true;
         ReleaseEventFile(ef);
     }
 
