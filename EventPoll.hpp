@@ -94,6 +94,89 @@ public:
         ::close(epollfd_);
     }
 
+    void RegisterListenInQueue(int fd)
+    {
+        AppendWork(std::bind(&EventPoll::RegisterListenInLoop,
+            this, fd));
+    }
+
+    EventFile* RegisterSocketInQueue(int fd)
+    {
+        EventFile* ef = InitSocketEvent(fd);
+        UpdateEventsInQueue(ef, EPOLLIN, EPOLL_CTL_ADD);
+        return ef;
+    }
+
+    void UpdateEventsInQueue(EventFile* ef, int events, int op)
+    {
+        AppendWork(std::bind(&EventPoll::UpdateEventsInLoop, 
+            this, ef, events, op));
+    }
+
+    void SetMessageCallback(MessageCallback cb)
+    { messageCallback_ = std::move(cb); }
+
+    void SendMessage(EventFile* ef,RingBuffer* rb)
+    {
+        //called from another thread,might cause problem
+        SendMessageInLoop(ef,rb);
+    }
+
+    void AppendWork(Functor cb)
+    {
+        {
+            MutexLockGuard lock(mutex_);
+            if(quit_) return;
+            pendingFunctors_.push_back(std::move(cb));
+        }
+
+        Wakeup();
+    }
+
+    RingBuffer* GetRingBuffer()
+    {
+        RingBuffer* rb = ringBufferPool_.GetObj();
+        rb->Clean();
+        return rb;
+    }
+
+    void ReleaseRingBuffer(RingBuffer* rb)
+    { 
+        return ringBufferPool_.PutBack(rb);
+    }
+
+    EventFile* GetEventFile()
+    {
+        return eventFilePool_.GetObj();
+    }
+
+    void ReleaseEventFile(EventFile* ef)
+    {
+        return  eventFilePool_.PutBack(ef);
+    }
+
+private:
+    void SendMessageInLoop(EventFile* ef,RingBuffer* rb)
+    {
+        if(ef->closed_)
+        {
+            ef->GetEventPoll()->ReleaseRingBuffer(rb);
+            return;
+        }
+
+        if(!ef->IsWriting())
+        {
+            std::swap(ef->write_buffer_, rb);
+            ef->GetEventPoll()->ReleaseRingBuffer(rb);
+            HandleWrite(ef);
+        }
+        else
+        {
+            AppendWork(std::bind(&EventPoll::SendMessageInLoop,
+                this, ef, rb));
+        }
+    }
+
     void HandleRead(EventFile* ef)
     {
         PRINTCALL
@@ -137,77 +220,6 @@ public:
         UnregisterSocketInLoop(ef); 
     }
 
-    void RegisterListenInQueue(int fd)
-    {
-        AppendWork(std::bind(&EventPoll::RegisterListenInLoop,
-            this, fd));
-    }
-
-    EventFile* RegisterSocketInQueue(int fd)
-    {
-        EventFile* ef = InitSocketEvent(fd);
-        UpdateEventsInQueue(ef, EPOLLIN, EPOLL_CTL_ADD);
-        return ef;
-    }
-
-    void UpdateEventsInQueue(EventFile* ef, int events, int op)
-    {
-        AppendWork(std::bind(&EventPoll::UpdateEventsInLoop, 
-            this, ef, events, op));
-    }
-
-    void SetMessageCallback(MessageCallback cb)
-    { messageCallback_ = std::move(cb); }
-
-    void SendMessage(EventFile* ef,const char* buff, unsigned int len)
-    {
-        int need_send = len;
-
-        while(need_send > 0)
-        {
-            int send_once = ef->write_buffer_->Put(buff+(len - need_send), need_send);
-            
-            if(send_once > 0)
-            {
-                if(!ef->IsWriting())
-                    HandleWrite(ef);
-
-                need_send -= send_once;
-            }
-        }
-    }
-
-    void AppendWork(Functor cb)
-    {
-        {
-            MutexLockGuard lock(mutex_);
-            if(quit_) return;
-            pendingFunctors_.push_back(std::move(cb));
-        }
-
-        Wakeup();
-    }
-
-    RingBuffer* GetRingBuffer()
-    {
-        RingBuffer* rb = ringBufferPool_.GetObj();
-        rb->Clean();
-        return rb;
-    }
-
-    void ReleaseRingBuffer(RingBuffer* rb)
-    { return ringBufferPool_.PutBack(rb); }
-
-    EventFile* GetEventFile()
-    {
-        EventFile* ef = eventFilePool_.GetObj();
-        return  ef;
-    }
-
-    void ReleaseEventFile(EventFile* ef)
-    { return  eventFilePool_.PutBack(ef); }
-
-private:
     void UpdateEventsInLoop(EventFile* ef, int events, int op)
     {
         struct epoll_event ev;
