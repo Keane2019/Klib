@@ -19,9 +19,9 @@ private:
     unsigned int   size_;
     unsigned int   in_;
     unsigned int   out_;
-    MutexLock mutex_;
-    Condition not_empty_;
-    Condition not_full_;
+    // MutexLock mutex_;
+    // Condition not_empty_;
+    // Condition not_full_;
 private: //make it noncopyable
     RingBuffer(const RingBuffer& rhs);
     RingBuffer& operator=(const RingBuffer& rhs);
@@ -32,9 +32,9 @@ public:
     ,size_(nSize)
     ,in_(0)
     ,out_(0)
-    ,mutex_()
-    ,not_empty_(mutex_)
-    ,not_full_(mutex_)
+    // ,mutex_()
+    // ,not_empty_(mutex_)
+    // ,not_full_(mutex_)
     {
         if (!IsPowerOf2(nSize))
         {
@@ -51,17 +51,17 @@ public:
  
     int Put(const char *buffer, unsigned int len)
     {
-        MutexLockGuard lock(mutex_);
+        // MutexLockGuard lock(mutex_);
 
-        // if(size_ == in_ - out_)
+        // while (size_ == in_ - out_)
         // {
-        //     errno = EAGAIN;
-        //     return -1;
+        //     not_full_.Wait();
         // }
 
-        while (size_ == in_ - out_)
+        if(size_ == in_ - out_)
         {
-            not_full_.Wait();
+            errno = EAGAIN;
+            return -1;
         }
 
         len = MIN(len, size_ - in_ + out_);
@@ -73,25 +73,25 @@ public:
         memcpy(buffer_, buffer + l, len - l);
     
         in_ += len;
-        not_empty_.Notify();
+        // not_empty_.Notify();
         return len;
     }
 
     //read data from fd to buffer
     int ReadFD(int fd, unsigned int len)
     {
-        MutexLockGuard lock(mutex_);
+        // MutexLockGuard lock(mutex_);
+        
+        // while (size_ == in_ - out_)
+        // {
+        //     not_full_.Wait();
+        // }
 
         if(size_ == in_ - out_)
         {
             errno = EAGAIN;
             return -1;
         }
-
-        // while (size_ == in_ - out_)
-        // {
-        //     not_full_.Wait();
-        // }
 
         len = MIN(len, size_ - in_ + out_);
         unsigned int l = MIN(len, size_ - (in_  & (size_ - 1)));
@@ -103,23 +103,23 @@ public:
         ssize_t ret = ::readv(fd, iov, 2);
         if(ret <= 0) return ret; 
         in_ += ret;
-        not_empty_.Notify();
+        //not_empty_.Notify();
         return ret;
     }
 
     int Get(char *buffer, unsigned int len)
     {
-        MutexLockGuard lock(mutex_);
-
-        // if(in_ == out_)
+        // MutexLockGuard lock(mutex_);
+        
+        // while (in_ == out_)
         // {
-        //     errno = EAGAIN;
-        //     return -1;
+        //     not_empty_.Wait();
         // }
 
-        while (in_ == out_)
+        if(in_ == out_)
         {
-            not_empty_.Wait();
+            errno = EAGAIN;
+            return -1;
         }
 
         len = MIN(len, in_ - out_);
@@ -131,14 +131,19 @@ public:
         memcpy(buffer + l, buffer_, len - l);
     
         out_ += len;
-        not_full_.Notify();
+        //not_full_.Notify();
         return len;
     }
     
     //write data in buffer to fd
     int WriteFD(int fd, unsigned int len)
     {
-        MutexLockGuard lock(mutex_);
+        //MutexLockGuard lock(mutex_);
+        
+        // while (in_ == out_)
+        // {
+        //     not_empty_.Wait();
+        // }
 
         if(in_ == out_)
         {
@@ -146,11 +151,6 @@ public:
             return -1;
         }
 
-        // while (in_ == out_)
-        // {
-        //     not_empty_.Wait();
-        // }
-        
         len = MIN(len, in_ - out_);
         unsigned int l = MIN(len, size_ - (out_ & (size_ - 1)));
         struct iovec iov[2];
@@ -161,25 +161,25 @@ public:
         ssize_t ret = ::writev(fd, iov, 2);
         if(ret <= 0) return ret;
         out_ += len;
-        not_full_.Notify();
+        //not_full_.Notify();
         return len;
     }
  
     void Clean() 
     {
-        MutexLockGuard lock(mutex_);
+        //MutexLockGuard lock(mutex_);
         in_ = out_ = 0; 
     }
 
     unsigned int GetDataLen()
     {
-        MutexLockGuard lock(mutex_);
+        //MutexLockGuard lock(mutex_);
         return  in_ - out_; 
     }
     
     unsigned int GetSpaceLen() 
     { 
-        MutexLockGuard lock(mutex_);
+        //MutexLockGuard lock(mutex_);
         return size_ - in_ + out_; 
     }
 
