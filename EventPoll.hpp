@@ -257,8 +257,24 @@ private:
         ef->fd_ = fd;
         ef->event_poll_ = this;
         ef->closed_ = false;
-        if(!ef-> read_buffer_) ef->read_buffer_ = GetRingBuffer();
-        if(!ef-> write_buffer_) ef->write_buffer_ = GetRingBuffer();
+        
+        if(!ef-> read_buffer_)
+        {
+            ef->read_buffer_ = GetRingBuffer();
+        }
+        else
+        {
+            ef->read_buffer_->Clean();
+        }
+        
+        if(!ef-> write_buffer_) 
+        {
+            ef->write_buffer_ = GetRingBuffer();
+        }
+        else
+        {
+            ef->write_buffer_->Clean();
+        }
 
         ef->readCallback_ = std::move(
             std::bind(&EventPoll::HandleRead, this, ef));
