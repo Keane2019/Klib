@@ -8,7 +8,14 @@
 #define TEST_SIZE 1024
 int recved = 0;
 int sent = 0;
+bool stop;
 char buff[TEST_SIZE];
+
+void sigHandle(int sig)
+{
+    printf("SIGNAL: %d\n", sig);
+    stop = true;
+}
 
 int main(int argc,const char* argv[])
 {
@@ -25,34 +32,24 @@ int main(int argc,const char* argv[])
         return -1;
     }
 
-    EventThreadPool ep(1);
-    EventFile* ef = ep.RegisterSocket(sock);
-
-    while(sent < 104857600)
     {
-        ef->GetEventPoll()->SendMessage(ef, buff, TEST_SIZE);
-        sent += TEST_SIZE;
+        EventThreadPool ep(1);
+        EventFile* ef = ep.RegisterSocket(sock);
+        stop = false;
+        signal(SIGHUP, sigHandle);
+        signal(SIGTERM, sigHandle);
+        signal(SIGINT, sigHandle);
+
+
+        while(!stop)
+        {
+            RingBuffer* rb = ef->GetEventPoll()->GetRingBuffer();
+            rb->Put(buff, TEST_SIZE);
+            ef->GetEventPoll()->SendMessage(ef, rb);
+            sent += TEST_SIZE;
+        }
     }
 
-
-    // RingBuffer rb;
-    // while(sent < 1048576)
-    // {
-    //     rb.Put(buff,TEST_SIZE);
-    //     int send = rb.WriteFD(sock, TEST_SIZE);
-    //     printf("Send %d, Sum %d\n", send, sent);
-    //     if(send >= 0)
-    //     {
-    //         sent += send;
-    //     }
-    //     else
-    //     {
-    //         if(errno != EAGAIN)
-    //             break;
-    //     }
-    // }
-
     printf("R:%d S:%d\n", recved, sent);
-    //while(1) sleep(1);
     return 0;
 }

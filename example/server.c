@@ -7,7 +7,14 @@
 #define TEST_SIZE 1024
 int recved = 0;
 int sent = 0;
+bool stop;
 char buff[TEST_SIZE];
+
+void sigHandle(int sig)
+{
+    printf("SIGNAL: %d\n", sig);
+    stop = true;
+}
 
 void ProcessMessage(EventFile* ef)
 {
@@ -25,28 +32,22 @@ int main(int argc,const char* argv[])
 
     int listen_sock = CreateListen(atoi(argv[2]), argv[1]);
 
-    // int sock = accept(listen_sock, NULL, NULL);
-    // if(sock < 0) return -1;
-    // RingBuffer rb;
-    // while(1)
-    // {
-    //         int get_once = rb.ReadFD(sock, 65536);
-    //         if(get_once > 0) recved += get_once;
-    //         printf("Read %d Sum %d\n", get_once, recved);
-    //         rb.Get(buff, TEST_SIZE);
-    //         if(get_once < 0 && errno != EAGAIN) break;
-    // }
-    
-    EventThreadPool ep(1);
-    ep.SetMessageCallback(std::bind(
-        &ProcessMessage, std::placeholders::_1));
-    ep.RegisterListen(listen_sock);
-
-    while(1)
     {
-        printf("R:%d S:%d\n", recved, sent);
-        sleep(1);
-    }
+        EventThreadPool ep(1);
+        ep.SetMessageCallback(std::bind(
+            &ProcessMessage, std::placeholders::_1));
+        ep.RegisterListen(listen_sock);
+        stop = false;
+        signal(SIGHUP, sigHandle);
+        signal(SIGTERM, sigHandle);
+        signal(SIGINT, sigHandle);
 
+        while(!stop)
+        {
+            printf("R:%d S:%d\n", recved, sent);
+            sleep(1);
+        }
+    }
+    
     return 0;
 }
