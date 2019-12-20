@@ -4,6 +4,7 @@
 #include <vector>
 #include <functional>
 #include <thread>
+#include <atomic>
 
 #include <sys/epoll.h>
 #include <errno.h>
@@ -37,7 +38,8 @@ struct EventFile
     int fd_;
     int revents_;
     int wait_events_;
-    bool closed_;
+    //odd : open, even : close
+    std::atomic<int> life_;
     RingBuffer* read_buffer_;
     RingBuffer* write_buffer_;
     EventPoll* event_poll_;
@@ -47,13 +49,24 @@ struct EventFile
     EventCallback errorCallback_;
 
     EventFile()
-    :read_buffer_(NULL)
+    :life_(0)
+    ,read_buffer_(NULL)
     ,write_buffer_(NULL)
     ,event_poll_(NULL)
     {}
 
     EventPoll* GetEventPoll()
     { return event_poll_; }
+
+    bool Closed()
+    {
+        return !life_.load() & 1;
+    }
+
+    bool Alive(int life)
+    {
+        return life_.load() == life;
+    }
 
     bool IsWriting()
     { return wait_events_ & EPOLLOUT; }
@@ -124,10 +137,28 @@ public:
     void SetMessageCallback(MessageCallback cb)
     { messageCallback_ = std::move(cb); }
 
-    void SendMessage(EventFile* ef,RingBuffer* rb)
+    bool SendMessageInLoop(EventFile* ef,RingBuffer* rb)
     {
-        //called from another thread,might cause problem
-        SendMessageInLoop(ef,rb);
+        PRINTCALL
+        if(ef->Closed())
+        {
+            ef->GetEventPoll()->ReleaseRingBuffer(rb);
+            return false;
+        }
+
+        if(!ef->IsWriting())
+        {
+            std::swap(ef->write_buffer_, rb);
+            if(rb) ef->GetEventPoll()->ReleaseRingBuffer(rb);
+            HandleWrite(ef);
+        }
+        else
+        {
+            AppendWork(std::bind(&EventPoll::SendMessageInLoop,
+                this, ef, rb));
+        }
+
+        return true;
     }
 
     void AppendWork(Functor cb)
@@ -157,6 +188,7 @@ public:
     EventFile* GetEventFile()
     {   
         EventFile* ef = eventFilePool_.GetObj();
+        ef->life_++;
         assert(ef->read_buffer_ == NULL);
         assert(ef->write_buffer_ == NULL);
         return ef;
@@ -176,35 +208,15 @@ public:
             ef->write_buffer_ = NULL;
         }
 
+        ef->life_++;
         return  eventFilePool_.PutBack(ef);
     }
 
 private:
-    void SendMessageInLoop(EventFile* ef,RingBuffer* rb)
-    {
-        if(ef->closed_)
-        {
-            ef->GetEventPoll()->ReleaseRingBuffer(rb);
-            return;
-        }
-
-        if(!ef->IsWriting())
-        {
-            std::swap(ef->write_buffer_, rb);
-            if(rb) ef->GetEventPoll()->ReleaseRingBuffer(rb);
-            HandleWrite(ef);
-        }
-        else
-        {
-            AppendWork(std::bind(&EventPoll::SendMessageInLoop,
-                this, ef, rb));
-        }
-    }
-
     void HandleRead(EventFile* ef)
     {
         PRINTCALL
-        if(ef->closed_) return;
+        if(ef->Closed()) return;
         int read_once = ef->read_buffer_->ReadFD(ef->fd_, RING_BUFF_SIZE);
 
         if(read_once > 0)
@@ -220,7 +232,7 @@ private:
     void HandleWrite(EventFile* ef)
     {
         PRINTCALL
-        if(ef->closed_) return;
+        if(ef->Closed()) return;
         ef->write_buffer_->WriteFD(ef->fd_, RING_BUFF_SIZE);
 
         if(ef->write_buffer_->GetDataLen() > 0)
@@ -281,7 +293,6 @@ private:
         EventFile* ef = GetEventFile();
         ef->fd_ = fd;
         ef->event_poll_ = this;
-        ef->closed_ = false;
 
         if(!ef->read_buffer_)
             ef->read_buffer_ = GetRingBuffer();
@@ -301,7 +312,6 @@ private:
     {
         MCHECK(::epoll_ctl(epollfd_, EPOLL_CTL_DEL, ef->fd_, NULL));
         ::close(ef->fd_);
-        ef->closed_ = true;
         ReleaseEventFile(ef);
     }
 
@@ -453,7 +463,7 @@ public:
     {
         for(int i = 0; i < pool_size_; i++)
         {
-            pool_[i]->SetMessageCallback(cb);
+            pool_[i]->SetMessageCallback(std::move(cb));
         }
     }
 

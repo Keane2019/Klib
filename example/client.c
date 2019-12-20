@@ -45,7 +45,7 @@ int main(int argc,const char* argv[])
         {
             RingBuffer* rb = ef->GetEventPoll()->GetRingBuffer();
             rb->Put(buff, TEST_SIZE);
-            ef->GetEventPoll()->SendMessage(ef, rb);
+            if(!ef->GetEventPoll()->SendMessageInLoop(ef, rb)) break;
             sent += TEST_SIZE;
         }
     }
