@@ -18,14 +18,16 @@
 #include "RingBuffer.hpp"
 #include "ObjectPool.hpp"
 
-#if 0
+#if 1
 #include <stdio.h>
 #define PRINTCALL printf("%s\n",__func__);
 #define PRINTERR printf("%s, %s\n",__func__, strerror(errno));
+#define NDEBUG
 #else
 #define PRINTCALL
 #define PRINTERR
 #endif
+#include <assert.h>
 
 class EventPoll;
 
@@ -43,6 +45,12 @@ struct EventFile
     EventCallback writeCallback_;
     EventCallback closeCallback_;
     EventCallback errorCallback_;
+
+    EventFile()
+    :read_buffer_(NULL)
+    ,write_buffer_(NULL)
+    ,event_poll_(NULL)
+    {}
 
     EventPoll* GetEventPoll()
     { return event_poll_; }
@@ -134,24 +142,40 @@ public:
     }
 
     RingBuffer* GetRingBuffer()
-    {
+    {   
         RingBuffer* rb = ringBufferPool_.GetObj();
-        rb->Clean();
-        return rb;
+        assert(rb->GetDataLen() == 0);
+        return rb;  
     }
 
     void ReleaseRingBuffer(RingBuffer* rb)
-    { 
-        return ringBufferPool_.PutBack(rb);
+    {
+        rb->Clean();
+        ringBufferPool_.PutBack(rb);
     }
 
     EventFile* GetEventFile()
-    {
-        return eventFilePool_.GetObj();
+    {   
+        EventFile* ef = eventFilePool_.GetObj();
+        assert(ef->read_buffer_ == NULL);
+        assert(ef->write_buffer_ == NULL);
+        return ef;
     }
 
     void ReleaseEventFile(EventFile* ef)
     {
+        if(ef->read_buffer_)
+        {
+            ReleaseRingBuffer(ef->read_buffer_);
+            ef->read_buffer_ = NULL;
+        }
+
+        if(ef->write_buffer_)
+        {
+            ReleaseRingBuffer(ef->write_buffer_);
+            ef->write_buffer_ = NULL;
+        }
+
         return  eventFilePool_.PutBack(ef);
     }
 
@@ -167,7 +191,7 @@ private:
         if(!ef->IsWriting())
         {
             std::swap(ef->write_buffer_, rb);
-            ef->GetEventPoll()->ReleaseRingBuffer(rb);
+            if(rb) ef->GetEventPoll()->ReleaseRingBuffer(rb);
             HandleWrite(ef);
         }
         else
@@ -180,6 +204,7 @@ private:
     void HandleRead(EventFile* ef)
     {
         PRINTCALL
+        if(ef->closed_) return;
         int read_once = ef->read_buffer_->ReadFD(ef->fd_, RING_BUFF_SIZE);
 
         if(read_once > 0)
@@ -196,7 +221,7 @@ private:
     {
         PRINTCALL
         if(ef->closed_) return;
-        int write_once = ef->write_buffer_->WriteFD(ef->fd_, RING_BUFF_SIZE);
+        ef->write_buffer_->WriteFD(ef->fd_, RING_BUFF_SIZE);
 
         if(ef->write_buffer_->GetDataLen() > 0)
         {
@@ -257,24 +282,9 @@ private:
         ef->fd_ = fd;
         ef->event_poll_ = this;
         ef->closed_ = false;
-        
-        if(!ef-> read_buffer_)
-        {
+
+        if(!ef->read_buffer_)
             ef->read_buffer_ = GetRingBuffer();
-        }
-        else
-        {
-            ef->read_buffer_->Clean();
-        }
-        
-        if(!ef-> write_buffer_) 
-        {
-            ef->write_buffer_ = GetRingBuffer();
-        }
-        else
-        {
-            ef->write_buffer_->Clean();
-        }
 
         ef->readCallback_ = std::move(
             std::bind(&EventPoll::HandleRead, this, ef));

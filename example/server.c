@@ -18,8 +18,10 @@ void sigHandle(int sig)
 
 void ProcessMessage(EventFile* ef)
 {
-    int get_once = ef->read_buffer_->Get(buff, TEST_SIZE);
-    recved += get_once;
+    RingBuffer* rb = ef->GetEventPoll()->GetRingBuffer();
+    std::swap(ef->read_buffer_, rb);
+    recved += rb->GetDataLen();
+    ef->GetEventPoll()->ReleaseRingBuffer(rb);
 }
 
 int main(int argc,const char* argv[])
