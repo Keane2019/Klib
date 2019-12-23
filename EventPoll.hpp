@@ -4,7 +4,6 @@
 #include <vector>
 #include <functional>
 #include <thread>
-#include <atomic>
 
 #include <sys/epoll.h>
 #include <errno.h>
@@ -38,8 +37,10 @@ struct EventFile
     int fd_;
     int revents_;
     int wait_events_;
+    //EventFile could be reused as it is retrieved from ObjectPool,
+    //It's necessary to know its state change 
     //odd : open, even : close
-    std::atomic<int> life_;
+    int life_;
     RingBuffer* read_buffer_;
     RingBuffer* write_buffer_;
     EventPoll* event_poll_;
@@ -60,12 +61,12 @@ struct EventFile
 
     bool Closed()
     {
-        return !life_.load() & 1;
+        return !life_ & 1;
     }
 
-    bool Alive(int life)
+    bool Expired(int life)
     {
-        return life_.load() == life;
+        return life_ != life;
     }
 
     bool IsWriting()
@@ -76,6 +77,7 @@ struct EventFile
 
     void HandleEvent()
     {
+        PRINTCALL
         if ((revents_ & EPOLLHUP) && !(revents_ & EPOLLIN))
         { if (closeCallback_) closeCallback_(); }
 
@@ -137,10 +139,10 @@ public:
     void SetMessageCallback(MessageCallback cb)
     { messageCallback_ = std::move(cb); }
 
-    bool SendMessageInLoop(EventFile* ef,RingBuffer* rb)
+    bool SendMessage(EventFile* ef, RingBuffer* rb, int life)
     {
         PRINTCALL
-        if(ef->Closed())
+        if(ef->Expired(life))
         {
             ef->GetEventPoll()->ReleaseRingBuffer(rb);
             return false;
@@ -154,8 +156,8 @@ public:
         }
         else
         {
-            AppendWork(std::bind(&EventPoll::SendMessageInLoop,
-                this, ef, rb));
+            AppendWork(std::bind(&EventPoll::SendMessage,
+                this, ef, rb, life));
         }
 
         return true;
@@ -173,7 +175,7 @@ public:
     }
 
     RingBuffer* GetRingBuffer()
-    {   
+    {
         RingBuffer* rb = ringBufferPool_.GetObj();
         assert(rb->GetDataLen() == 0);
         return rb;  
@@ -216,7 +218,6 @@ private:
     void HandleRead(EventFile* ef)
     {
         PRINTCALL
-        if(ef->Closed()) return;
         int read_once = ef->read_buffer_->ReadFD(ef->fd_, RING_BUFF_SIZE);
 
         if(read_once > 0)
@@ -231,10 +232,15 @@ private:
 
     void HandleWrite(EventFile* ef)
     {
-        PRINTCALL
-        if(ef->Closed()) return;
-        ef->write_buffer_->WriteFD(ef->fd_, RING_BUFF_SIZE);
-
+        if(ef->write_buffer_->WriteFD(ef->fd_, RING_BUFF_SIZE) < 0)
+        {
+            PRINTERR
+        }
+        else
+        {
+            PRINTCALL
+        }
+        
         if(ef->write_buffer_->GetDataLen() > 0)
         {
             UpdateEventsInLoop(ef, EPOLLIN | EPOLLOUT, EPOLL_CTL_MOD);
@@ -242,7 +248,7 @@ private:
         else
         {
             UpdateEventsInLoop(ef, EPOLLIN, EPOLL_CTL_MOD);
-        } 
+        }
     }
 
     void HandleClose(EventFile* ef)

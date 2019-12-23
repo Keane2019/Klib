@@ -35,6 +35,7 @@ int main(int argc,const char* argv[])
     {
         EventThreadPool ep(1);
         EventFile* ef = ep.RegisterSocket(sock);
+        int life = ef->life_;
         stop = false;
         signal(SIGHUP, sigHandle);
         signal(SIGTERM, sigHandle);
@@ -45,7 +46,7 @@ int main(int argc,const char* argv[])
         {
             RingBuffer* rb = ef->GetEventPoll()->GetRingBuffer();
             rb->Put(buff, TEST_SIZE);
-            if(!ef->GetEventPoll()->SendMessageInLoop(ef, rb)) break;
+            if(!ef->GetEventPoll()->SendMessage(ef, rb, life)) break;
             sent += TEST_SIZE;
         }
     }
