@@ -215,7 +215,7 @@ private:
         }
         else
         {
-            AppendWork(std::bind(&EventPoll::SendMessage,
+            AppendWork(std::bind(&EventPoll::SendMessageInLoop,
                 this, ef, rb, life));
         }
     }
