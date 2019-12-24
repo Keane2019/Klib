@@ -118,12 +118,21 @@ public:
         ::close(epollfd_);
     }
 
-    void RunEvery(Functor cb, int interval)
+    EventFile* CreateTimer(Functor cb, int interval, bool repeat = true)
     {
         struct itimerspec new_value;
         new_value.it_value.tv_sec = interval;
         new_value.it_value.tv_nsec = 0;
-        new_value.it_interval.tv_sec = interval;
+
+        if(repeat)
+        {
+            new_value.it_interval.tv_sec = interval;
+        }
+        else
+        {
+            new_value.it_interval.tv_sec = 0;
+        }
+        
         new_value.it_interval.tv_nsec = 0;
 
         int timerfd = ::timerfd_create(CLOCK_MONOTONIC,
@@ -138,7 +147,16 @@ public:
         ef->timerCallback_ = std::move(cb);
         ef->readCallback_ = std::move(std::bind(&EventPoll::HandleTimerInLoop
             ,this ,ef));
+        if(!repeat) ef->closeCallback_ = std::move(std::bind(
+            &EventPoll::UnregisterSocketInLoop ,this ,ef));
         UpdateEventsInQueue(ef, EPOLLIN, EPOLL_CTL_ADD);
+        return ef;
+    }
+
+    void DeleteTimer(EventFile* ef)
+    {
+        AppendWork(std::bind(&EventPoll::UnregisterSocketInLoop,
+            this, ef));
     }
 
     void RegisterListenInQueue(int fd)
@@ -217,11 +235,18 @@ public:
             ef->write_buffer_ = NULL;
         }
 
+        ef->readCallback_ = NULL;
+        ef->writeCallback_ = NULL;
+        ef->closeCallback_ = NULL;
+        ef->errorCallback_ = NULL;
+        ef->timerCallback_ = NULL;
+
         ef->life_++;
         return  eventFilePool_.PutBack(ef);
     }
 
 private:
+
     void SendMessageInLoop(EventFile* ef, RingBuffer* rb, int life)
     {
         PRINTCALL
@@ -455,6 +480,7 @@ private:
         uint64_t one = 1;
         ::read(ef->fd_, &one, sizeof one);
         ef->timerCallback_();
+        if(ef->closeCallback_) ef->closeCallback_();
     }
 
 private:

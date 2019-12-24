@@ -56,7 +56,7 @@ int main(int argc,const char* argv[])
         EventFile* ef = ep.RegisterSocket(sock);
         int life = ef->life_;
         EventPoll evpoll;
-        evpoll.RunEvery(std::bind(&Send, ef, life) ,3);
+        EventFile* timer = evpoll.CreateTimer(std::bind(&Send, ef, life) ,3);
         
         while(!stop)
         {
