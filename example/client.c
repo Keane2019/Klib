@@ -21,7 +21,7 @@ void Send(EventFile* ef, int life)
 {
     RingBuffer* rb = ef->GetEventPoll()->GetRingBuffer();
     rb->Put(buff, TEST_SIZE);
-    if(!ef->GetEventPoll()->SendMessage(ef, rb, life));
+    ef->GetEventPoll()->SendMessage(ef, rb, life);
     sent += TEST_SIZE;
 }
 

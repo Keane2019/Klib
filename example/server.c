@@ -7,7 +7,7 @@
 #define TEST_SIZE 1024
 int recved = 0;
 int sent = 0;
-bool stop;
+bool stop = false;
 char buff[TEST_SIZE];
 
 void sigHandle(int sig)
@@ -32,6 +32,10 @@ int main(int argc,const char* argv[])
         return 1;
     }
 
+    signal(SIGHUP, sigHandle);
+    signal(SIGTERM, sigHandle);
+    signal(SIGINT, sigHandle);
+
     int listen_sock = CreateListen(atoi(argv[2]), argv[1]);
 
     {
@@ -39,10 +43,6 @@ int main(int argc,const char* argv[])
         ep.SetMessageCallback(std::bind(
             &ProcessMessage, std::placeholders::_1));
         ep.RegisterListen(listen_sock);
-        stop = false;
-        signal(SIGHUP, sigHandle);
-        signal(SIGTERM, sigHandle);
-        signal(SIGINT, sigHandle);
 
         while(!stop)
         {
