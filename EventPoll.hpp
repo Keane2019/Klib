@@ -163,32 +163,15 @@ public:
     void SetMessageCallback(MessageCallback cb)
     { messageCallback_ = std::move(cb); }
 
-    bool SendMessage(EventFile* ef, RingBuffer* rb, int life)
+    void SendMessage(EventFile* ef, RingBuffer* rb, int life)
     {
-        PRINTCALL
-        if(ef->Expired(life))
-        {
-            ef->GetEventPoll()->ReleaseRingBuffer(rb);
-            return false;
-        }
-
-        if(!ef->IsWriting())
-        {
-            std::swap(ef->write_buffer_, rb);
-            if(rb) ef->GetEventPoll()->ReleaseRingBuffer(rb);
-            HandleWrite(ef);
-        }
-        else
-        {
-            AppendWork(std::bind(&EventPoll::SendMessage,
-                this, ef, rb, life));
-        }
-
-        return true;
+        AppendWork(std::bind(&EventPoll::SendMessageInLoop, 
+            this, ef, rb, life));
     }
 
     void AppendWork(Functor cb)
     {
+        PRINTCALL
         {
             MutexLockGuard lock(mutex_);
             if(quit_) return;
@@ -239,6 +222,28 @@ public:
     }
 
 private:
+    void SendMessageInLoop(EventFile* ef, RingBuffer* rb, int life)
+    {
+        PRINTCALL
+        if(ef->Expired(life))
+        {
+            ef->GetEventPoll()->ReleaseRingBuffer(rb);
+            return;
+        }
+
+        if(!ef->IsWriting())
+        {
+            std::swap(ef->write_buffer_, rb);
+            if(rb) ef->GetEventPoll()->ReleaseRingBuffer(rb);
+            HandleWrite(ef);
+        }
+        else
+        {
+            AppendWork(std::bind(&EventPoll::SendMessageInLoop,
+                this, ef, rb, life));
+        }
+    }
+
     void HandleRead(EventFile* ef)
     {
         PRINTCALL
@@ -408,6 +413,7 @@ private:
 
     void ProcessEvents(int numEvents)
     {
+        PRINTCALL
         for(int i = 0; i < numEvents; ++i)
         {
             EventFile* ef = (EventFile*)events_[i].data.ptr;
@@ -418,6 +424,7 @@ private:
 
     void ProcessWorkQueue()
     {
+        PRINTCALL
         std::vector<Functor> functors;
 
         {
