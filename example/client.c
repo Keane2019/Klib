@@ -8,13 +8,26 @@
 #define TEST_SIZE 1024
 int recved = 0;
 int sent = 0;
-bool stop;
+bool stop = false;
 char buff[TEST_SIZE];
 
 void sigHandle(int sig)
 {
     printf("SIGNAL: %d\n", sig);
     stop = true;
+}
+
+void Send(EventFile* ef, int life)
+{
+    RingBuffer* rb = ef->GetEventPoll()->GetRingBuffer();
+    rb->Put(buff, TEST_SIZE);
+    if(!ef->GetEventPoll()->SendMessage(ef, rb, life));
+    sent += TEST_SIZE;
+}
+
+void Echo()
+{
+    printf("START\n");
 }
 
 int main(int argc,const char* argv[])
@@ -25,6 +38,10 @@ int main(int argc,const char* argv[])
         return 0;
     }
 
+    signal(SIGHUP, sigHandle);
+    signal(SIGTERM, sigHandle);
+    signal(SIGINT, sigHandle);
+
     int sock = ConnectServer(atoi(argv[2]), argv[1]);
     if(sock < 0)
     {
@@ -34,23 +51,18 @@ int main(int argc,const char* argv[])
 
     {
         EventThreadPool ep(1);
+        ep.AppendWork(std::bind(&Echo));
+
         EventFile* ef = ep.RegisterSocket(sock);
         int life = ef->life_;
-        stop = false;
-        signal(SIGHUP, sigHandle);
-        signal(SIGTERM, sigHandle);
-        signal(SIGINT, sigHandle);
-
-
+        EventPoll evpoll;
+        evpoll.RunEvery(std::bind(&Send, ef, life) ,3);
+        
         while(!stop)
         {
-            RingBuffer* rb = ef->GetEventPoll()->GetRingBuffer();
-            rb->Put(buff, TEST_SIZE);
-            if(!ef->GetEventPoll()->SendMessage(ef, rb, life)) break;
-            sent += TEST_SIZE;
+            printf("R:%d S:%d\n", recved, sent);
+            sleep(1);
         }
     }
-
-    printf("R:%d S:%d\n", recved, sent);
     return 0;
 }
