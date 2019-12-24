@@ -13,12 +13,12 @@
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-
+#include <sys/timerfd.h>
 
 #include "RingBuffer.hpp"
 #include "ObjectPool.hpp"
 
-#if 1
+#if 0
 #include <stdio.h>
 #define PRINTCALL printf("%s\n",__func__);
 #define PRINTERR printf("%s, %s\n",__func__, strerror(errno));
@@ -48,6 +48,7 @@ struct EventFile
     EventCallback writeCallback_;
     EventCallback closeCallback_;
     EventCallback errorCallback_;
+    EventCallback timerCallback_;
 
     EventFile()
     :life_(0)
@@ -115,6 +116,29 @@ public:
         AppendWork(std::bind(&EventPoll::Stop, this));
         thread_.join();
         ::close(epollfd_);
+    }
+
+    void RunEvery(Functor cb, int interval)
+    {
+        struct itimerspec new_value;
+        new_value.it_value.tv_sec = interval;
+        new_value.it_value.tv_nsec = 0;
+        new_value.it_interval.tv_sec = interval;
+        new_value.it_interval.tv_nsec = 0;
+
+        int timerfd = ::timerfd_create(CLOCK_MONOTONIC,
+            TFD_NONBLOCK | TFD_CLOEXEC);
+        if(timerfd < 0) abort();
+
+        MCHECK(::timerfd_settime(timerfd, 0, &new_value, NULL));
+
+        EventFile* ef = GetEventFile();
+        ef->fd_ = timerfd;
+        ef->event_poll_ = this;
+        ef->timerCallback_ = std::move(cb);
+        ef->readCallback_ = std::move(std::bind(&EventPoll::HandleTimerInLoop
+            ,this ,ef));
+        UpdateEventsInQueue(ef, EPOLLIN, EPOLL_CTL_ADD);
     }
 
     void RegisterListenInQueue(int fd)
@@ -419,6 +443,13 @@ private:
         ::read(ef->fd_, &one, sizeof one);
     }
 
+    void HandleTimerInLoop(EventFile* ef)
+    {
+        uint64_t one = 1;
+        ::read(ef->fd_, &one, sizeof one);
+        ef->timerCallback_();
+    }
+
 private:
     typedef std::vector<struct epoll_event> EventList;
     static const int eventSize_ = 16;
@@ -494,6 +525,11 @@ public:
     EventFile* RegisterSocket(int fd)
     {
         return SelectEventPoll()->RegisterSocketInQueue(fd);
+    }
+
+    void AppendWork(Functor cb)
+    {
+        return SelectEventPoll()->AppendWork(std::move(cb));
     }
 
 private:
