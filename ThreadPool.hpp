@@ -4,6 +4,7 @@
 #include <vector>
 #include <thread>
 #include <atomic>
+#include <memory>
 
 #include "BlockingQueue.hpp"
 typedef std::function<void()> Task;
@@ -11,14 +12,14 @@ typedef std::function<void()> Task;
 class ThreadPool
 {
 public:
-    explicit ThreadPool(int poolSize)
+    explicit ThreadPool(unsigned int poolSize)
     :stop_(false)
-    ,threads_(poolSize)
     {
-        for(unsigned int i = 0; i < threads_.size(); i++)
+        threads_.reserve(poolSize);
+
+        for(unsigned int i = 0; i < poolSize; i++)
         {
-            std::thread temp(&ThreadPool::Loop, this);
-            threads_[i].swap(temp);
+            threads_.emplace_back(new std::thread(&ThreadPool::Loop, this));   
         }
     }
 
@@ -26,9 +27,9 @@ public:
     {
         Stop();
 
-        for(unsigned int i = 0; i < threads_.size(); i++)
+        for(auto& thread_ : threads_)
         {
-            threads_[i].join();
+            thread_->join();
         }
     }
 
@@ -59,7 +60,7 @@ private:
 private:
     std::atomic<bool> stop_;
     BlockingQueue<Task> queue_;
-    std::vector<std::thread> threads_;
+    std::vector<std::unique_ptr<std::thread>> threads_;
 
 private: //make it noncopyable
     ThreadPool(const ThreadPool& rhs);
