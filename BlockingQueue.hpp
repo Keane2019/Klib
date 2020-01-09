@@ -22,6 +22,14 @@ public:
         notEmpty_.Notify();
     }
 
+    template <typename ... Args>
+    void Put(Args&& ... args)
+    {
+        MutexLockGuard lock(mutex_);
+        queue_.emplace_back(std::forward<Args>(args)...);
+        notEmpty_.Notify();
+    }
+
     T Take()
     {
         MutexLockGuard lock(mutex_);
@@ -33,7 +41,7 @@ public:
 
         T front(std::move(queue_.front()));
         queue_.pop_front();
-        return std::move(front);
+        return front;
     }
 
     size_t Size()

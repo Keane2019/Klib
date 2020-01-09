@@ -1,15 +1,15 @@
-#ifndef _CIRCULAR_QUEUE_H
-#define _CIRCULAR_QUEUE_H
+#ifndef _BOUNDED_BLOCKING_QUEUE_H
+#define _BOUNDED_BLOCKING_QUEUE_H
 
-#include <list>
+#include <deque>
 
 #include "LockUtils.hpp"
 
 template<typename T>
-class CircularQueue
+class BoundedBlockingQueue
 {
 public:
-	explicit CircularQueue(int maxSize)
+	explicit BoundedBlockingQueue(int maxSize)
 	:maxSize_(maxSize)
 	,mutex_()
 	,notEmpty_(mutex_)
@@ -28,6 +28,19 @@ public:
 		notEmpty_.Notify();
 	}
 
+	template <typename ... Args>
+    void Put(Args&& ... args)
+    {
+		MutexLockGuard lock(mutex_);
+		while (queue_.size() == maxSize_)
+		{
+			notFull_.Wait();
+		}
+
+        queue_.emplace_back(std::forward<Args>(args)...);
+        notEmpty_.Notify();
+    }
+
 	T Take()
 	{
 		MutexLockGuard lock(mutex_);
@@ -39,7 +52,7 @@ public:
 		T front(std::move(queue_.front()));
 		queue_.pop_front();
 		notFull_.Notify();
-		return std::move(front);
+		return front;
 	}
 
 	bool Empty()
@@ -71,10 +84,11 @@ private:
 	MutexLock		mutex_;
 	Condition		notEmpty_;
 	Condition		notFull_;
-	std::list<T>	queue_;
+	std::deque<T>	queue_;
+
 private: //make it noncopyable
-    CircularQueue(const CircularQueue& rhs);
-    CircularQueue& operator=(const CircularQueue& rhs);
+    BoundedBlockingQueue(const BoundedBlockingQueue& rhs);
+    BoundedBlockingQueue& operator=(const BoundedBlockingQueue& rhs);
 };
 
 #endif
