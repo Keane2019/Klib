@@ -2,8 +2,8 @@
 #define _BOUNDED_BLOCKING_QUEUE_H
 
 #include <deque>
-
-#include "LockUtils.hpp"
+#include <mutex>
+#include <condition_variable>
 
 template<typename T>
 class BoundedBlockingQueue
@@ -11,84 +11,67 @@ class BoundedBlockingQueue
 public:
 	explicit BoundedBlockingQueue(int maxSize)
 	:maxSize_(maxSize)
-	,mutex_()
-	,notEmpty_(mutex_)
-	,notFull_(mutex_)
 	{}
 
 	void Put(T&& x)
 	{
-		MutexLockGuard lock(mutex_);
-		while (queue_.size() == maxSize_)
-		{
-			notFull_.Wait();
-		}
-
+		std::unique_lock<std::mutex> lock(mutex_);
+		notFull_.wait(lock, [this]{ return queue_.size() != maxSize_;});
 		queue_.push_back(std::move(x));
-		notEmpty_.Notify();
+		notEmpty_.notify_one();
 	}
 
 	template <typename ... Args>
     void Put(Args&& ... args)
     {
-		MutexLockGuard lock(mutex_);
-		while (queue_.size() == maxSize_)
-		{
-			notFull_.Wait();
-		}
-
+		std::unique_lock<std::mutex> lock(mutex_);
+		notFull_.wait(lock, [this]{ return queue_.size() != maxSize_;});
         queue_.emplace_back(std::forward<Args>(args)...);
-        notEmpty_.Notify();
+        notEmpty_.notify_one();
     }
 
 	T Take()
 	{
-		MutexLockGuard lock(mutex_);
-		while (queue_.empty())
-		{
-			notEmpty_.Wait();
-		}
-
+		std::unique_lock<std::mutex> lock(mutex_);
+		notEmpty_.wait(lock, [this]{ return !queue_.empty();});
 		T front(std::move(queue_.front()));
 		queue_.pop_front();
-		notFull_.Notify();
+		notFull_.notify_one();
 		return front;
 	}
 
 	bool Empty()
 	{
-		MutexLockGuard lock(mutex_);
+		std::lock_guard<std::mutex> lock(mutex_);
 		return queue_.empty();
 	}
 
 	bool Full()
 	{
-		MutexLockGuard lock(mutex_);
+		std::lock_guard<std::mutex> lock(mutex_);
 		return queue_.size() == maxSize_;
 	}
 
 	size_t Size()
 	{
-		MutexLockGuard lock(mutex_);
+		std::lock_guard<std::mutex> lock(mutex_);
 		return queue_.size();
 	}
 
 	size_t Capacity()
 	{
-		MutexLockGuard lock(mutex_);
+		std::lock_guard<std::mutex> lock(mutex_);
 		return maxSize_;
 	}
 
 private:
 	unsigned int 	maxSize_;
-	MutexLock		mutex_;
-	Condition		notEmpty_;
-	Condition		notFull_;
+	std::mutex		mutex_;
+	std::condition_variable		notEmpty_;
+	std::condition_variable		notFull_;
 	std::deque<T>	queue_;
-
-private: //make it noncopyable
-    BoundedBlockingQueue(const BoundedBlockingQueue& rhs);
-    BoundedBlockingQueue& operator=(const BoundedBlockingQueue& rhs);
+    BoundedBlockingQueue(const BoundedBlockingQueue& rhs) = delete;
+    BoundedBlockingQueue& operator=(const BoundedBlockingQueue& rhs) = delete;
 };
 
 #endif

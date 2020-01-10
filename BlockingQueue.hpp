@@ -2,43 +2,35 @@
 #define _BLOCKING_QUEUE_H
 
 #include <deque>
-
-#include "LockUtils.hpp"
+#include <mutex>
+#include <condition_variable>
 
 template<typename T>
 class BlockingQueue
 {
 public:
     explicit BlockingQueue()
-    :mutex_()
-    ,notEmpty_(mutex_)
-    ,queue_()
     {}
 
     void Put(T&& x)
     {
-        MutexLockGuard lock(mutex_);
+        std::lock_guard<std::mutex> lock(mutex_);
         queue_.push_back(std::move(x));
-        notEmpty_.Notify();
+        cond_.notify_one();
     }
 
     template <typename ... Args>
     void Put(Args&& ... args)
     {
-        MutexLockGuard lock(mutex_);
+        std::lock_guard<std::mutex> lock(mutex_);
         queue_.emplace_back(std::forward<Args>(args)...);
-        notEmpty_.Notify();
+        cond_.notify_one();
     }
 
     T Take()
     {
-        MutexLockGuard lock(mutex_);
-        // always use a while-loop, due to spurious wakeup
-        while (queue_.empty())
-        {
-          	notEmpty_.Wait();
-        }
-
+        std::unique_lock<std::mutex> lock(mutex_);
+        cond_.wait(lock, [this]{ return !queue_.empty();});
         T front(std::move(queue_.front()));
         queue_.pop_front();
         return front;
@@ -46,18 +38,16 @@ public:
 
     size_t Size()
     {
-        MutexLockGuard lock(mutex_);
+        std::lock_guard<std::mutex> lock(mutex_);
         return queue_.size();
     }
 
 private:
-    MutexLock         mutex_;
-    Condition         notEmpty_;
+    std::mutex                  mutex_;
+    std::condition_variable     cond_;
     std::deque<T>     queue_;
-
-private: //make it noncopyable
-    BlockingQueue(const BlockingQueue& rhs);
-    BlockingQueue& operator=(const BlockingQueue& rhs);
+    BlockingQueue(const BlockingQueue& rhs) = delete;
+    BlockingQueue& operator=(const BlockingQueue& rhs) = delete;
 };
 
 #endif

@@ -2,11 +2,10 @@
 #define _RING_BUFFER_H
 
 #include <string.h>
-//#include <unistd.h>
 #include <errno.h>
 #include <sys/uio.h>
 
-#include "LockUtils.hpp"
+//#include "LockUtils.hpp"
 
 #define MIN(x, y) x<y?x:y
 #define RING_BUFF_SIZE 65536
@@ -22,6 +21,7 @@ private:
     // MutexLock mutex_;
     // Condition not_empty_;
     // Condition not_full_;
+    
 private: //make it noncopyable
     RingBuffer(const RingBuffer& rhs);
     RingBuffer& operator=(const RingBuffer& rhs);
