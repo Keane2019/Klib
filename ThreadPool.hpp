@@ -1,70 +1,76 @@
 #ifndef _THREAD_POOL_H
 #define _THREAD_POOL_H
 
-#include <vector>
 #include <thread>
-#include <atomic>
 #include <memory>
+#include <deque>
 
-#include "BlockingQueue.hpp"
-typedef std::function<void()> Task;
+#include "LockUtils.hpp"
 
 class ThreadPool
 {
 public:
-    explicit ThreadPool(unsigned int poolSize)
-    :stop_(false)
-    {
-        threads_.reserve(poolSize);
+    using Task = std::function<void()>;
 
-        for(unsigned int i = 0; i < poolSize; i++)
+    ThreadPool(std::size_t poolSize = std::thread::hardware_concurrency())
+    :shared_src(std::make_shared<pool_src>())
+    {
+        for(unsigned int i=0; i<poolSize; ++i)
         {
-            threads_.emplace_back(new std::thread(&ThreadPool::Loop, this));   
+            std::thread([](std::shared_ptr<pool_src> ptr2src)
+            {
+                while(true)
+                {
+                    Task task;
+                    {
+                        MutexLockGuard lock(ptr2src->mutex_);
+                        
+                        while(ptr2src->queue_.empty() && !ptr2src->stop_)
+                            ptr2src->notEmpty_.Wait();
+
+                        if(ptr2src->stop_) return;
+                        std::swap(task, ptr2src->queue_.front());
+                        ptr2src->queue_.pop_front();
+                    }
+                    task();
+                }
+            }, shared_src).detach();
         }
+    }
+
+    template <typename ... Args>
+    void Run(Args&& ... args)
+    {
+        MutexLockGuard lock(shared_src->mutex_);
+        shared_src->queue_.push_back(std::move(
+            std::bind(std::forward<Args>(args)...)));
+        shared_src->notEmpty_.Notify();
     }
 
     ~ThreadPool()
     {
-        Stop();
-
-        for(auto& thread_ : threads_)
-        {
-            thread_->join();
-        }
-    }
-
-    void Run(Task&& task)
-    {
-        queue_.Put(std::move(task));
+        shared_src->stop_ = true;
+        shared_src->notEmpty_.NotifyAll();
     }
 
 private:
-    void Stop()
+    struct pool_src
     {
-        stop_ = true;
-        for(unsigned int i = 0; i < threads_.size(); i++)
-        {
-            Run(std::move([]{}));
-        }
-    }
+        MutexLock           mutex_;
+        Condition           notEmpty_;
+        std::deque<Task>    queue_;
+        bool                stop_;
 
-    void Loop()
-    {
-        while(!stop_)
-        {
-            Task task = queue_.Take();
-            task();
-        }
-    }
+        pool_src()
+        :mutex_()
+        ,notEmpty_(mutex_)
+        ,stop_(false){}
+    };
 
-private:
-    std::atomic<bool> stop_;
-    BlockingQueue<Task> queue_;
-    std::vector<std::unique_ptr<std::thread>> threads_;
+    std::shared_ptr<pool_src>   shared_src;
 
-private: //make it noncopyable
-    ThreadPool(const ThreadPool& rhs);
-    ThreadPool& operator=(const ThreadPool& rhs);
+    ThreadPool(const ThreadPool& rhs) = delete;
+    ThreadPool& operator=(const ThreadPool& rhs) = delete;
 };
 
 #endif
