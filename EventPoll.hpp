@@ -14,14 +14,15 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/timerfd.h>
+#include <arpa/inet.h>
 
 #include "RingBuffer.hpp"
 #include "ObjectPool.hpp"
 
-#if 0
+#if 1
 #include <stdio.h>
-#define PRINTCALL printf("%s\n",__func__);
-#define PRINTERR printf("%s, %s\n",__func__, strerror(errno));
+#define PRINTCALL printf("%s\n",__func__)
+#define PRINTERR printf("%s, %s\n",__func__, strerror(errno))
 #define NDEBUG
 #else
 #define PRINTCALL
@@ -30,95 +31,105 @@
 #include <assert.h>
 
 class EventPoll;
-
 struct EventFile
 {
-    typedef std::function<void()> EventCallback;
+    using EventCallback = std::function<void()>;
     int fd_;
-    int revents_;
-    int wait_events_;
-    //EventFile could be reused as it is retrieved from ObjectPool,
-    //It's necessary to know its state change 
-    //odd : open, even : close
-    int life_;
-    RingBuffer* read_buffer_;
-    RingBuffer* write_buffer_;
-    EventPoll* event_poll_;
+    int readyEvents_;
+    int waitEvents_;
+    EventPoll* poll_;
+    RingBuffer readBuffer_;
+    RingBuffer writeBuffer_;
     EventCallback readCallback_;
     EventCallback writeCallback_;
     EventCallback closeCallback_;
-    EventCallback errorCallback_;
-    EventCallback timerCallback_;
 
-    EventFile()
-    :life_(0)
-    ,read_buffer_(NULL)
-    ,write_buffer_(NULL)
-    ,event_poll_(NULL)
+    EventFile(int fd, EventPoll* ep)
+    :fd_(fd)
+    ,poll_(ep)
     {}
 
+    ~EventFile()
+    {
+        ::close(fd_);
+    }
+
     EventPoll* GetEventPoll()
-    { return event_poll_; }
-
-    bool Closed()
-    {
-        return !life_ & 1;
-    }
-
-    bool Expired(int life)
-    {
-        return life_ != life;
-    }
+    { return poll_; }
 
     bool IsWriting()
-    { return wait_events_ & EPOLLOUT; }
+    { return waitEvents_ & EPOLLOUT; }
 
     bool IsReading()
-    { return wait_events_ & EPOLLIN; }
+    { return waitEvents_ & EPOLLIN; }
 
     void HandleEvent()
     {
-        PRINTCALL
-        if ((revents_ & EPOLLHUP) && !(revents_ & EPOLLIN))
+        if ((readyEvents_ & EPOLLHUP) && !(readyEvents_ & EPOLLIN))
         { if (closeCallback_) closeCallback_(); }
 
-        if (revents_ & (EPOLLERR))
-        { if (errorCallback_) errorCallback_(); }
+        if (readyEvents_ & (EPOLLERR))
+        { if (closeCallback_) closeCallback_(); }
 
-        if (revents_ & (EPOLLIN | EPOLLPRI | EPOLLRDHUP))
+        if (readyEvents_ & (EPOLLIN | EPOLLPRI | EPOLLRDHUP))
         { if (readCallback_) readCallback_(); }
 
-        if (revents_ & EPOLLOUT)
+        if (readyEvents_ & EPOLLOUT)
         { if (writeCallback_) writeCallback_(); }
     }
-};
 
-typedef std::function<void()> Functor;
-typedef std::function<void(EventFile*)> MessageCallback;
-
-class EventPoll
-{
-public:
-    EventPoll()
-    :epollfd_(::epoll_create1(EPOLL_CLOEXEC))
-    ,wakeup_(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC))
-    ,quit_(false)
-    ,events_(eventSize_)
+    static int CreateListen(int port, const char* ip = NULL, bool re_use_addr = true, bool re_use_port = true)
     {
-        if(epollfd_ < 0 || wakeup_ < 0) abort();
-        ::signal(SIGPIPE, SIG_IGN);
-        RegisterWakeupInLoop(wakeup_);
-        Start();
+        int sockfd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        if(sockfd < 0) abort();
+
+        int optval = re_use_addr ? 1 : 0;
+        MCHECK(::setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR,
+                &optval, sizeof(optval)));
+
+        optval = re_use_port ? 1 : 0;
+        MCHECK(::setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT,
+                            &optval, sizeof(optval)));
+
+        struct sockaddr_in local;
+        local.sin_family = AF_INET;
+        local.sin_port = htons(port);
+
+        if(ip)
+        {
+            local.sin_addr.s_addr = inet_addr(ip);
+        }
+        else
+        {
+            local.sin_addr.s_addr = inet_addr(INADDR_ANY);
+        }
+        
+        MCHECK(::bind(sockfd,(struct sockaddr*)&local , sizeof(local)));
+        MCHECK(::listen(sockfd, SOMAXCONN));
+        return sockfd;
     }
 
-    ~EventPoll()
+    static int ConnectServer(int port, const char* ip)
     {
-        AppendWork(std::bind(&EventPoll::Stop, this));
-        thread_.join();
-        ::close(epollfd_);
+        int sockfd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        if(sockfd < 0) abort();
+
+        struct sockaddr_in remote;
+        remote.sin_family = AF_INET;
+        remote.sin_port = htons(port);
+        if(inet_pton(AF_INET, ip, &remote.sin_addr) != 1) abort();
+        unsigned int usec = 100000; //0.1S
+        
+        while(::connect(sockfd, (struct sockaddr*)&remote, sizeof(remote)) < 0)
+        {
+            usleep(usec);
+            if(usec < 10000000) usec *= 2;
+        }
+
+        return sockfd;
     }
 
-    EventFile* CreateTimer(Functor cb, int interval, bool repeat = true)
+    static int CreateTimer(int interval, bool repeat)
     {
         struct itimerspec new_value;
         new_value.it_value.tv_sec = interval;
@@ -140,145 +151,97 @@ public:
         if(timerfd < 0) abort();
 
         MCHECK(::timerfd_settime(timerfd, 0, &new_value, NULL));
+        return timerfd;
+    }
+};
 
-        EventFile* ef = GetEventFile();
-        ef->fd_ = timerfd;
-        ef->event_poll_ = this;
-        ef->timerCallback_ = std::move(cb);
+using Functor = std::function<void()>;
+using MessageCallback = std::function<void(EventFile*)>;
+
+class EventPoll
+{
+public:
+    EventPoll()
+    :epollFd_(::epoll_create1(EPOLL_CLOEXEC))
+    ,wakeupFd_(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC))
+    ,quit_(false)
+    ,events_(eventSize_)
+    {
+        if(epollFd_ < 0 || wakeupFd_ < 0) abort();
+        ::signal(SIGPIPE, SIG_IGN);
+        EventFile* ef = new EventFile(wakeupFd_, this);
+        ef->readCallback_ = std::move(
+            std::bind(&EventPoll::HandleWakeupInLoop, this, ef));
+        UpdateEventsInLoop(ef, EPOLLIN, EPOLL_CTL_ADD);
+        thread_ = std::move(std::thread(&EventPoll::Loop, this));
+    }
+
+    ~EventPoll()
+    {
+        quit_ = true;
+        Wakeup();
+        thread_.join();
+        ::close(epollFd_);
+    }
+
+    template <typename ... Args>
+    void Run(Args&& ... args)
+    {
+        PRINTCALL;
+        {
+            MutexLockGuard lock(mutex_);
+            pendingFunctors_.push_back(std::move(
+            std::bind(std::forward<Args>(args)...)));
+        }
+
+        Wakeup();
+    }
+
+    void RunEvery(Functor cb, int interval, bool repeat = true)
+    {
+        PRINTCALL;
+        int timerfd = EventFile::CreateTimer(interval, repeat);
+        EventFile* ef = new EventFile(timerfd, this);
+        ef->writeCallback_ = std::move(cb);
         ef->readCallback_ = std::move(std::bind(&EventPoll::HandleTimerInLoop
             ,this ,ef));
         if(!repeat) ef->closeCallback_ = std::move(std::bind(
-            &EventPoll::UnregisterSocketInLoop ,this ,ef));
+            &EventPoll::UpdateEventsInQueue ,this ,ef, 0, EPOLL_CTL_DEL));
         UpdateEventsInQueue(ef, EPOLLIN, EPOLL_CTL_ADD);
-        return ef;
     }
 
-    void DeleteTimer(EventFile* ef)
+    EventFile* Connect(int port, const char* ip)
     {
-        AppendWork(std::bind(&EventPoll::UnregisterSocketInLoop,
-            this, ef));
-    }
-
-    void RegisterListenInQueue(int fd)
-    {
-        AppendWork(std::bind(&EventPoll::RegisterListenInLoop,
-            this, fd));
+        int connfd = EventFile::ConnectServer(port, ip);
+        return RegisterSocketInQueue(connfd);
     }
 
     EventFile* RegisterSocketInQueue(int fd)
     {
-        EventFile* ef = InitSocketEvent(fd);
+        EventFile* ef = new EventFile(fd, this);
+        ef->readCallback_ = std::move(
+            std::bind(&EventPoll::HandleRead, this, ef));
+        ef->writeCallback_ = std::move(
+            std::bind(&EventPoll::HandleWrite, this, ef));
+        ef->closeCallback_ = std::move(
+            std::bind(&EventPoll::HandleClose, this, ef));
         UpdateEventsInQueue(ef, EPOLLIN, EPOLL_CTL_ADD);
         return ef;
     }
 
     void UpdateEventsInQueue(EventFile* ef, int events, int op)
     {
-        AppendWork(std::bind(&EventPoll::UpdateEventsInLoop, 
-            this, ef, events, op));
-    }
-
-    void SetMessageCallback(MessageCallback cb)
-    { messageCallback_ = std::move(cb); }
-
-    void SendMessage(EventFile* ef, RingBuffer* rb, int life)
-    {
-        AppendWork(std::bind(&EventPoll::SendMessageInLoop, 
-            this, ef, rb, life));
-    }
-
-    void AppendWork(Functor cb)
-    {
-        PRINTCALL
-        {
-            MutexLockGuard lock(mutex_);
-            if(quit_) return;
-            pendingFunctors_.push_back(std::move(cb));
-        }
-
-        Wakeup();
-    }
-
-    RingBuffer* GetRingBuffer()
-    {
-        RingBuffer* rb = ringBufferPool_.GetObj();
-        assert(rb->GetDataLen() == 0);
-        return rb;  
-    }
-
-    void ReleaseRingBuffer(RingBuffer* rb)
-    {
-        rb->Clean();
-        ringBufferPool_.PutBack(rb);
-    }
-
-    EventFile* GetEventFile()
-    {   
-        EventFile* ef = eventFilePool_.GetObj();
-        ef->life_++;
-        assert(ef->read_buffer_ == NULL);
-        assert(ef->write_buffer_ == NULL);
-        return ef;
-    }
-
-    void ReleaseEventFile(EventFile* ef)
-    {
-        if(ef->read_buffer_)
-        {
-            ReleaseRingBuffer(ef->read_buffer_);
-            ef->read_buffer_ = NULL;
-        }
-
-        if(ef->write_buffer_)
-        {
-            ReleaseRingBuffer(ef->write_buffer_);
-            ef->write_buffer_ = NULL;
-        }
-
-        ef->readCallback_ = NULL;
-        ef->writeCallback_ = NULL;
-        ef->closeCallback_ = NULL;
-        ef->errorCallback_ = NULL;
-        ef->timerCallback_ = NULL;
-
-        ef->life_++;
-        return  eventFilePool_.PutBack(ef);
+        Run(&EventPoll::UpdateEventsInLoop, 
+            this, ef, events, op);
     }
 
 private:
-
-    void SendMessageInLoop(EventFile* ef, RingBuffer* rb, int life)
-    {
-        PRINTCALL
-        if(ef->Expired(life))
-        {
-            ef->GetEventPoll()->ReleaseRingBuffer(rb);
-            return;
-        }
-
-        if(!ef->IsWriting())
-        {
-            std::swap(ef->write_buffer_, rb);
-            if(rb) ef->GetEventPoll()->ReleaseRingBuffer(rb);
-            HandleWrite(ef);
-        }
-        else
-        {
-            AppendWork(std::bind(&EventPoll::SendMessageInLoop,
-                this, ef, rb, life));
-        }
-    }
-
     void HandleRead(EventFile* ef)
     {
-        PRINTCALL
-        int read_once = ef->read_buffer_->ReadFD(ef->fd_, RING_BUFF_SIZE);
+        PRINTCALL;
+        int read_once = ef->readBuffer_.ReadFD(ef->fd_, RING_BUFF_SIZE);
 
-        if(read_once > 0)
-        {
-            messageCallback_(ef);
-        }
-        if(read_once == 0)
+        if(read_once <= 0)
         {
             HandleClose(ef);
         }
@@ -286,16 +249,10 @@ private:
 
     void HandleWrite(EventFile* ef)
     {
-        if(ef->write_buffer_->WriteFD(ef->fd_, RING_BUFF_SIZE) < 0)
-        {
-            PRINTERR
-        }
-        else
-        {
-            PRINTCALL
-        }
+        PRINTCALL;
+        ef->writeBuffer_.WriteFD(ef->fd_, RING_BUFF_SIZE);
         
-        if(ef->write_buffer_->GetDataLen() > 0)
+        if(ef->writeBuffer_.GetDataLen() > 0)
         {
             UpdateEventsInLoop(ef, EPOLLIN | EPOLLOUT, EPOLL_CTL_MOD);
         }
@@ -307,106 +264,26 @@ private:
 
     void HandleClose(EventFile* ef)
     {
-        PRINTCALL
-        UnregisterSocketInLoop(ef);
-    }
-
-    void HandleError(EventFile* ef)
-    {
-        PRINTERR
-        UnregisterSocketInLoop(ef); 
+        PRINTCALL;
+        UpdateEventsInLoop(ef, 0, EPOLL_CTL_DEL);
     }
 
     void UpdateEventsInLoop(EventFile* ef, int events, int op)
     {
-        struct epoll_event ev;
-        ev.events = events;
-        ev.data.ptr = ef;
-        ef->wait_events_ = events;
-        MCHECK(::epoll_ctl(epollfd_, op, ef->fd_, &ev));
-    }
-
-    EventFile* RegisterSocketInLoop(int fd)
-    {
-        EventFile* ef = InitSocketEvent(fd);
-        UpdateEventsInLoop(ef, EPOLLIN, EPOLL_CTL_ADD);
-        return ef;
-    }
-
-    void HandleAcceptInLoop(EventFile* ef)
-    {
-        int connfd = ::accept4(ef->fd_, NULL,
-                        NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
-
-        if(connfd > 0)
+        printf("%d -> %d\n", ef->fd_, op);
+        if(op == EPOLL_CTL_DEL)
         {
-            RegisterSocketInLoop(connfd);
+            MCHECK(::epoll_ctl(epollFd_, EPOLL_CTL_DEL, ef->fd_, nullptr));
+            delete ef;
         }
         else
         {
-            PRINTERR
+            struct epoll_event ev;
+            ev.events = events;
+            ev.data.ptr = ef;
+            ef->waitEvents_ = events;
+            MCHECK(::epoll_ctl(epollFd_, op, ef->fd_, &ev));
         }
-    }
-
-    EventFile* InitSocketEvent(int fd)
-    {
-        EventFile* ef = GetEventFile();
-        ef->fd_ = fd;
-        ef->event_poll_ = this;
-
-        if(!ef->read_buffer_)
-            ef->read_buffer_ = GetRingBuffer();
-
-        ef->readCallback_ = std::move(
-            std::bind(&EventPoll::HandleRead, this, ef));
-        ef->writeCallback_ = std::move(
-            std::bind(&EventPoll::HandleWrite, this, ef));
-        ef->closeCallback_ = std::move(
-            std::bind(&EventPoll::HandleClose, this, ef));
-        ef->errorCallback_ = std::move(
-            std::bind(&EventPoll::HandleError, this, ef));
-        return ef;
-    }
-
-    void UnregisterSocketInLoop(EventFile* ef)
-    {
-        MCHECK(::epoll_ctl(epollfd_, EPOLL_CTL_DEL, ef->fd_, NULL));
-        ::close(ef->fd_);
-        ReleaseEventFile(ef);
-    }
-
-    void RegisterListenInLoop(int fd)
-    {
-        EventFile* ef = GetEventFile();
-        ef->fd_ = fd;
-        ef->event_poll_ = this;
-        ef->readCallback_ = std::move(
-            std::bind(&EventPoll::HandleAcceptInLoop, this, ef));
-        UpdateEventsInLoop(ef, EPOLLIN, EPOLL_CTL_ADD);    
-    }
-
-    void RegisterWakeupInLoop(int fd)
-    {
-        EventFile* ef = GetEventFile();
-        ef->fd_ = fd;
-        ef->event_poll_ = this;
-        ef->readCallback_ = std::move(
-            std::bind(&EventPoll::HandleWakeupInLoop, this, ef));
-        UpdateEventsInLoop(ef, EPOLLIN, EPOLL_CTL_ADD);
-    }
-
-    void Start()
-    {
-        if(!thread_.joinable())
-        {
-            std::thread t(&EventPoll::Loop, this);
-            thread_.swap(t);
-        }
-    }
-
-    void Stop()
-    {
-        quit_ = true;
     }
 
     void Loop()
@@ -420,14 +297,20 @@ private:
 
     void Poll()
     {
-        int numEvents = ::epoll_wait(epollfd_,
+        PRINTCALL;
+        int numEvents = ::epoll_wait(epollFd_,
                                     &*events_.begin(),
                                     events_.size(),
                                     epollTimeout_);
 
         if(numEvents > 0)
         {
-            ProcessEvents(numEvents);
+            for(int i = 0; i < numEvents; ++i)
+            {
+                EventFile* ef = (EventFile*)events_[i].data.ptr;
+                ef->readyEvents_ = events_[i].events;
+                ef->HandleEvent();
+            }
 
             if((unsigned int)numEvents == events_.size())
             {
@@ -436,20 +319,9 @@ private:
         }
     }
 
-    void ProcessEvents(int numEvents)
-    {
-        PRINTCALL
-        for(int i = 0; i < numEvents; ++i)
-        {
-            EventFile* ef = (EventFile*)events_[i].data.ptr;
-            ef->revents_ = events_[i].events;
-            ef->HandleEvent();
-        }
-    }
-
     void ProcessWorkQueue()
     {
-        PRINTCALL
+        PRINTCALL;
         std::vector<Functor> functors;
 
         {
@@ -465,107 +337,76 @@ private:
 
     void Wakeup()
     {
+        PRINTCALL;
         uint64_t one = 1;
-        ::write(wakeup_, &one, sizeof one);
+        ::write(wakeupFd_, &one, sizeof one);
     }
 
     void HandleWakeupInLoop(EventFile* ef)
     {
+        PRINTCALL;
         uint64_t one = 1;
         ::read(ef->fd_, &one, sizeof one);
     }
 
     void HandleTimerInLoop(EventFile* ef)
     {
+        PRINTCALL;
         uint64_t one = 1;
         ::read(ef->fd_, &one, sizeof one);
-        ef->timerCallback_();
+        ef->writeCallback_();
         if(ef->closeCallback_) ef->closeCallback_();
     }
 
 private:
-    typedef std::vector<struct epoll_event> EventList;
+    using EventList = std::vector<struct epoll_event>;
     static const int eventSize_ = 16;
     static const int epollTimeout_ = 10000;
 
-    int epollfd_;
-    int wakeup_;
+    int epollFd_;
+    int wakeupFd_;
     bool quit_;
     EventList events_;
     std::thread thread_;
 
     MutexLock mutex_;
     std::vector<Functor> pendingFunctors_;
-    ObjectPool<EventFile> eventFilePool_;
     ObjectPool<RingBuffer> ringBufferPool_;
     MessageCallback messageCallback_;
 };
 
 class EventThreadPool
 {
-private:
-    typedef std::vector<EventPoll*> EventPollList;
-    int pool_size_;
-    int index_;
-    MutexLock mutex_;
-    EventPollList pool_;
-
 public:
-    EventThreadPool(int pool_size)
-    :pool_size_(pool_size)
+    EventThreadPool(int size = std::thread::hardware_concurrency())
+    :poolSize_(size)
     ,index_(0)
+    ,pool_(poolSize_)
+    {}
+
+    void Listen(int port, const char* ip = NULL)
     {
-        for(int i = 0; i < pool_size_; i++)
-        {
-            pool_.push_back(new EventPoll());
-        }
+        int fd = EventFile::CreateListen(port, ip);
+        EventPoll& ep = SelectEventPoll();
+        EventFile* ef = new EventFile(fd, &ep);
+        ef->readCallback_ = std::move(
+            std::bind(&EventThreadPool::HandleAccept, this, ef));
+        ep.UpdateEventsInQueue(ef, EPOLLIN, EPOLL_CTL_ADD);
     }
 
-    ~EventThreadPool()
+private:
+    EventFile* RegisterSocket(int fd)
     {
-        for(EventPoll* ep : pool_)
-        {
-            delete ep;
-        }
+        return SelectEventPoll().RegisterSocketInQueue(fd);
     }
 
-    void SetMessageCallback(MessageCallback cb)
-    {
-        for(int i = 0; i < pool_size_; i++)
-        {
-            pool_[i]->SetMessageCallback(std::move(cb));
-        }
-    }
-
-    EventPoll* SelectEventPoll()
+    EventPoll& SelectEventPoll()
     {
         MutexLockGuard lock(mutex_);
-        index_ = (index_ + 1) % pool_size_;
+        index_ = (index_ + 1) % poolSize_;
         return pool_[index_];
     }
 
-    void RegisterListen(int fd)
-    {
-        EventPoll* ep = SelectEventPoll();
-        EventFile* ef = ep->GetEventFile();
-        ef->fd_ = fd;
-        ef->event_poll_ = ep;
-        ef->readCallback_ = std::move(
-            std::bind(&EventThreadPool::HandleAccept, this, ef));
-        ep->UpdateEventsInQueue(ef, EPOLLIN, EPOLL_CTL_ADD);
-    }
-
-    EventFile* RegisterSocket(int fd)
-    {
-        return SelectEventPoll()->RegisterSocketInQueue(fd);
-    }
-
-    void AppendWork(Functor cb)
-    {
-        return SelectEventPoll()->AppendWork(std::move(cb));
-    }
-
-private:
     void HandleAccept(EventFile* ef)
     {
         int connfd = ::accept4(ef->fd_, NULL,
@@ -577,9 +418,15 @@ private:
         }
         else
         {
-            PRINTERR
+            PRINTERR;
         }
     }
+private:
+    using EventPollList = std::vector<EventPoll>;
+    unsigned int poolSize_;
+    unsigned int index_;
+    MutexLock mutex_;
+    EventPollList pool_;
 };
 
 #endif

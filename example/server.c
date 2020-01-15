@@ -2,7 +2,6 @@
 #include <unistd.h>
 
 #include "../EventPoll.hpp"
-#include "../Sockets.hpp"
 
 #define TEST_SIZE 1024
 int recved = 0;
@@ -14,14 +13,6 @@ void sigHandle(int sig)
 {
     printf("SIGNAL: %d\n", sig);
     stop = true;
-}
-
-void ProcessMessage(EventFile* ef)
-{
-    RingBuffer* rb = ef->GetEventPoll()->GetRingBuffer();
-    std::swap(ef->read_buffer_, rb);
-    recved += rb->GetDataLen();
-    ef->GetEventPoll()->ReleaseRingBuffer(rb);
 }
 
 int main(int argc,const char* argv[])
@@ -36,13 +27,10 @@ int main(int argc,const char* argv[])
     signal(SIGTERM, sigHandle);
     signal(SIGINT, sigHandle);
 
-    int listen_sock = CreateListen(atoi(argv[2]), argv[1]);
 
     {
-        EventThreadPool ep(1);
-        ep.SetMessageCallback(std::bind(
-            &ProcessMessage, std::placeholders::_1));
-        ep.RegisterListen(listen_sock);
+        EventThreadPool ep;
+        ep.Listen(atoi(argv[2]), argv[1]);
 
         while(!stop)
         {
