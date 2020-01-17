@@ -23,23 +23,17 @@ void Echo()
 
 int main(int argc,const char* argv[])
 {
-    if(argc != 3)
-    {
-        printf("Usage:%s [ip] [port]\n",argv[0]);
-        return 0;
-    }
-
     signal(SIGHUP, sigHandle);
     signal(SIGTERM, sigHandle);
     signal(SIGINT, sigHandle);
 
     {
         EventPoll ep;
-        EventFile* ef = ep.Connect(atoi(argv[2]), argv[1]);
+        ep.Connect(8000, "127.0.0.1");
         
         while(!stop)
         {
-            printf("R:%d S:%d\n", recved, sent);
+            //printf("R:%d S:%d\n", recved, sent);
             sleep(1);
         }
     }
