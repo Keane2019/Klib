@@ -22,12 +22,13 @@ int main(int argc,const char* argv[])
 
     {
         EventPoll ep;
-        EventFile* ef = ep.Connect(8000, "127.0.0.1");
+        WeakFile ef = ep.Connect(8000, "127.0.0.1");
         const char* msg = "hello";
     
         while(!stop)
         {
-            ef->Send(msg, strlen(msg));
+            SharedFile sef = ef.lock();
+            if(sef) sef->Send(msg, strlen(msg));
             //printf("R:%d S:%d\n", recved, sent);
             sleep(1);
         }

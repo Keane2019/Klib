@@ -4,6 +4,7 @@
 #include <vector>
 #include <functional>
 #include <thread>
+#include <map>
 
 #include <sys/epoll.h>
 #include <errno.h>
@@ -54,10 +55,13 @@ struct EventFile
     ,readyEvents_(0)
     ,waitEvents_(waitEvents)
     ,epollCtl_(epollCtl)
-    {}
+    {
+        PRINTCALL;
+    }
 
     ~EventFile()
     {
+        PRINTCALL;
         ::close(fd_);
     }
 
@@ -141,7 +145,7 @@ struct EventFile
         else
         {
             if(IsWriting())
-            {            
+            {
                 waitEvents_ = EPOLLIN;
                 epollCtl_ = EPOLL_CTL_MOD;
             }
@@ -232,8 +236,8 @@ struct EventFile
 };
 
 using Functor = std::function<void()>;
-using SharedEventPtr = std::shared_ptr<EventFile>;
-using WeakEventPtr = std::weak_ptr<EventFile>;
+using SharedFile = std::shared_ptr<EventFile>;
+using WeakFile = std::weak_ptr<EventFile>;
 
 class EventPoll
 {
@@ -247,10 +251,10 @@ public:
     {
         if(epollFd_ < 0 || wakeupFd_ < 0) abort();
         ::signal(SIGPIPE, SIG_IGN);
-        EventFile* ef = new EventFile(wakeupFd_);
+        SharedFile ef = std::make_shared<EventFile>(wakeupFd_);
         ef->readCallback_ = std::move(
-            std::bind(&EventFile::HandleWakeup, ef));
-        UpdateEventsInLoop(ef);
+            std::bind(&EventFile::HandleWakeup, ef.get()));
+        AddEventsInLoop(ef);
         thread_ = std::move(std::thread(&EventPoll::Loop, this));
     }
 
@@ -277,41 +281,43 @@ public:
     void RunEvery(Functor cb, int interval, bool repeat = true)
     {
         int timerfd = EventFile::CreateTimer(interval, repeat);
-        EventFile* ef = new EventFile(timerfd);
+        SharedFile ef = std::make_shared<EventFile>(timerfd);
+        EventFile* pef = ef.get();
         ef->writeCallback_ = std::move(cb);
         ef->readCallback_ = std::move(std::bind(&EventFile::HandleTimer
-            ,ef));
-        if(!repeat) ef->closeCallback_ = std::move([ef]
+            ,pef));
+        if(!repeat) ef->closeCallback_ = std::move([pef]
             {
-                ef->waitEvents_ = 0;
-                ef->epollCtl_ = EPOLL_CTL_DEL;
+                pef->waitEvents_ = 0;
+                pef->epollCtl_ = EPOLL_CTL_DEL;
             });
-        UpdateEventsInQueue(ef);
+        AddEventsInQueue(ef);
     }
 
-    EventFile* Connect(int port, const char* ip)
+    WeakFile Connect(int port, const char* ip)
     {
         int connfd = EventFile::ConnectServer(port, ip);
         return RegisterSocketInQueue(connfd);
     }
 
-    EventFile* RegisterSocketInQueue(int fd)
+    WeakFile RegisterSocketInQueue(int fd)
     {
-        EventFile* ef = new EventFile(fd);
+        SharedFile ef = std::make_shared<EventFile>(fd);
+        EventFile* pef = ef.get();
         ef->readCallback_ = std::move(
-            std::bind(&EventFile::HandleRead, ef));
+            std::bind(&EventFile::HandleRead, pef));
         ef->writeCallback_ = std::move(
-            std::bind(&EventFile::HandleWrite, ef));
+            std::bind(&EventFile::HandleWrite, pef));
         ef->closeCallback_ = std::move(
-            std::bind(&EventFile::HandleClose, ef));
+            std::bind(&EventFile::HandleClose, pef));
         ef->messageCallback_ = messageCallback_;
-        UpdateEventsInQueue(ef);
+        AddEventsInQueue(ef);
         return ef;
     }
 
-    void UpdateEventsInQueue(EventFile* ef)
+    void AddEventsInQueue(SharedFile& ef)
     {
-        Run(&EventPoll::UpdateEventsInLoop, 
+        Run(&EventPoll::AddEventsInLoop, 
             this, ef);
     }
 
@@ -324,7 +330,7 @@ private:
             if(ef->epollCtl_ == EPOLL_CTL_DEL)
             {
                 MCHECK(::epoll_ctl(epollFd_, EPOLL_CTL_DEL, ef->fd_, nullptr));
-                delete ef;
+                eventFiles_.erase(ef->fd_);
             }
             else
             {
@@ -335,6 +341,17 @@ private:
                 ef->epollCtl_ = 0;
             }
         }
+    }
+
+    void AddEventsInLoop(SharedFile& ef)
+    {   
+        printf("FD %d -> EPOLL_CTL %d\n", ef->fd_, ef->epollCtl_);
+        struct epoll_event ev;
+        ev.events = ef->waitEvents_;
+        ev.data.ptr = ef.get();
+        MCHECK(::epoll_ctl(epollFd_, ef->epollCtl_, ef->fd_, &ev));
+        ef->epollCtl_ = 0;
+        eventFiles_[ef->fd_] = ef;
     }
 
     void Loop()
@@ -416,6 +433,7 @@ private:
     MutexLock mutex_;
     std::vector<Functor> pendingFunctors_;
     MessageCallback messageCallback_;
+    std::map<int, SharedFile> eventFiles_;
 };
 
 class EventThreadPool
@@ -431,14 +449,14 @@ public:
     {
         int fd = EventFile::CreateListen(port, ip);
         EventPoll& ep = SelectEventPoll();
-        EventFile* ef = new EventFile(fd);
+        SharedFile ef = std::make_shared<EventFile>(fd);
         ef->readCallback_ = std::move(
-            std::bind(&EventThreadPool::HandleAccept, this, ef));
-        ep.UpdateEventsInQueue(ef);
+            std::bind(&EventThreadPool::HandleAccept, this, ef.get()));
+        ep.AddEventsInQueue(ef);
     }
 
 private:
-    EventFile* RegisterSocket(int fd)
+    WeakFile RegisterSocket(int fd)
     {
         return SelectEventPoll().RegisterSocketInQueue(fd);
     }
