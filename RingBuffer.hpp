@@ -171,13 +171,13 @@ public:
         in_ = out_ = 0; 
     }
 
-    unsigned int GetDataLen()
+    unsigned int Size()
     {
         MutexLockGuard lock(mutex_);
         return  in_ - out_; 
     }
     
-    unsigned int GetSpaceLen() 
+    unsigned int Space() 
     { 
         MutexLockGuard lock(mutex_);
         return size_ - in_ + out_; 

@@ -23,12 +23,17 @@
 #include <stdio.h>
 #define PRINTCALL printf("%s\n",__func__)
 #define PRINTERR printf("%s, %s\n",__func__, strerror(errno))
+#define PRINTCNT(str, x) printf("%s: %d\n",str, x)
 #define NDEBUG
 #else
 #define PRINTCALL
 #define PRINTERR
+#define PRINTCNT(str, x) 
 #endif
 #include <assert.h>
+
+struct EventFile;
+using MessageCallback = std::function<void(EventFile*)>;
 
 struct EventFile
 {
@@ -42,6 +47,7 @@ struct EventFile
     EventCallback readCallback_;
     EventCallback writeCallback_;
     EventCallback closeCallback_;
+    MessageCallback messageCallback_;
 
     EventFile(int fd, int waitEvents = EPOLLIN, int epollCtl = EPOLL_CTL_ADD)
     :fd_(fd)
@@ -53,6 +59,12 @@ struct EventFile
     ~EventFile()
     {
         ::close(fd_);
+    }
+
+    void Send(const char* buff, unsigned int len)
+    {
+        writeBuffer_.Put(buff, len);
+        if(!IsWriting()) HandleWrite();
     }
 
     bool IsWriting()
@@ -97,9 +109,19 @@ struct EventFile
         PRINTCALL;
         int read_once = readBuffer_.ReadFD(fd_, RING_BUFF_SIZE);
 
-        if(read_once <= 0)
+        if(read_once == 0)
         {
             HandleClose();
+            return;
+        }
+        else if(read_once < 0)
+        {
+            PRINTERR;
+        }
+
+        if(readBuffer_.Size() > 0)
+        {
+            messageCallback_(this);
         }
     }
 
@@ -108,7 +130,7 @@ struct EventFile
         PRINTCALL;
         writeBuffer_.WriteFD(fd_, RING_BUFF_SIZE);
         
-        if(writeBuffer_.GetDataLen() > 0)
+        if(writeBuffer_.Size() > 0)
         {
             if(!IsWriting())
             {
@@ -210,16 +232,18 @@ struct EventFile
 };
 
 using Functor = std::function<void()>;
-using MessageCallback = std::function<void(EventFile*)>;
+using SharedEventPtr = std::shared_ptr<EventFile>;
+using WeakEventPtr = std::weak_ptr<EventFile>;
 
 class EventPoll
 {
 public:
-    EventPoll()
+    EventPoll(MessageCallback cb = EventPoll::defaultMessageCallback)
     :epollFd_(::epoll_create1(EPOLL_CLOEXEC))
     ,wakeupFd_(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC))
     ,quit_(false)
     ,events_(eventSize_)
+    ,messageCallback_(cb)
     {
         if(epollFd_ < 0 || wakeupFd_ < 0) abort();
         ::signal(SIGPIPE, SIG_IGN);
@@ -280,6 +304,7 @@ public:
             std::bind(&EventFile::HandleWrite, ef));
         ef->closeCallback_ = std::move(
             std::bind(&EventFile::HandleClose, ef));
+        ef->messageCallback_ = messageCallback_;
         UpdateEventsInQueue(ef);
         return ef;
     }
@@ -369,6 +394,14 @@ private:
         ::write(wakeupFd_, &one, sizeof one);
     }
 
+    static void defaultMessageCallback(EventFile* ef)
+    {
+        static int sum = 0;
+        sum += ef->readBuffer_.Size();
+        ef->readBuffer_.Clean();
+        PRINTCNT("recved", sum);
+    }
+
 private:
     using EventList = std::vector<struct epoll_event>;
     static const int eventSize_ = 16;
@@ -382,7 +415,6 @@ private:
 
     MutexLock mutex_;
     std::vector<Functor> pendingFunctors_;
-    ObjectPool<RingBuffer> ringBufferPool_;
     MessageCallback messageCallback_;
 };
 

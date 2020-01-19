@@ -2,23 +2,16 @@
 #include<unistd.h>
 #include "../EventPoll.hpp"
 
-#define TEST_SIZE 1024
-int recved = 0;
-int sent = 0;
 bool stop = false;
-char buff[TEST_SIZE];
-
-
 void sigHandle(int sig)
 {
     printf("SIGNAL: %d\n", sig);
     stop = true;
 }
 
-
 void Echo()
 {
-    printf("START\n");
+    printf("Echo\n");
 }
 
 int main(int argc,const char* argv[])
@@ -29,10 +22,12 @@ int main(int argc,const char* argv[])
 
     {
         EventPoll ep;
-        ep.Connect(8000, "127.0.0.1");
-        
+        EventFile* ef = ep.Connect(8000, "127.0.0.1");
+        const char* msg = "hello";
+    
         while(!stop)
         {
+            ef->Send(msg, strlen(msg));
             //printf("R:%d S:%d\n", recved, sent);
             sleep(1);
         }

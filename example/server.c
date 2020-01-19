@@ -3,11 +3,7 @@
 
 #include "../EventPoll.hpp"
 
-#define TEST_SIZE 1024
-int recved = 0;
-int sent = 0;
 bool stop = false;
-char buff[TEST_SIZE];
 
 void sigHandle(int sig)
 {
@@ -20,7 +16,6 @@ int main(int argc,const char* argv[])
     signal(SIGHUP, sigHandle);
     signal(SIGTERM, sigHandle);
     signal(SIGINT, sigHandle);
-
 
     {
         EventThreadPool ep(1);
