@@ -11,6 +11,11 @@ void sigHandle(int sig)
     stop = true;
 }
 
+void MyMessageCallback(EventFile* ef)
+{
+    ef->readBuffer_.Clean();
+}
+
 int main(int argc,const char* argv[])
 {
     signal(SIGHUP, sigHandle);
@@ -18,12 +23,12 @@ int main(int argc,const char* argv[])
     signal(SIGINT, sigHandle);
 
     {
+        //EventThreadPool ep(1, MyMessageCallback);
         EventThreadPool ep(1);
         ep.Listen(8000);
 
         while(!stop)
         {
-            //printf("R:%d S:%d\n", recved, sent);
             sleep(1);
         }
     }

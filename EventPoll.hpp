@@ -266,6 +266,11 @@ public:
         ::close(epollFd_);
     }
 
+    void SetMessageCallback(MessageCallback& cb)
+    {
+        messageCallback_ = cb;
+    }
+
     template <typename ... Args>
     void Run(Args&& ... args)
     {
@@ -319,6 +324,14 @@ public:
     {
         Run(&EventPoll::AddEventsInLoop, 
             this, ef);
+    }
+
+    static void defaultMessageCallback(EventFile* ef)
+    {
+        static int sum = 0;
+        sum += ef->readBuffer_.Size();
+        ef->readBuffer_.Clean();
+        PRINTCNT("recved", sum);
     }
 
 private:
@@ -411,14 +424,6 @@ private:
         ::write(wakeupFd_, &one, sizeof one);
     }
 
-    static void defaultMessageCallback(EventFile* ef)
-    {
-        static int sum = 0;
-        sum += ef->readBuffer_.Size();
-        ef->readBuffer_.Clean();
-        PRINTCNT("recved", sum);
-    }
-
 private:
     using EventList = std::vector<struct epoll_event>;
     static const int eventSize_ = 16;
@@ -439,11 +444,17 @@ private:
 class EventThreadPool
 {
 public:
-    EventThreadPool(int size = std::thread::hardware_concurrency())
+    EventThreadPool(int size = std::thread::hardware_concurrency(),
+            MessageCallback cb = EventPoll::defaultMessageCallback)
     :poolSize_(size)
     ,index_(0)
     ,pool_(poolSize_)
-    {}
+    {
+        for(auto& ep : pool_)
+        {
+            ep.SetMessageCallback(cb);
+        }
+    }
 
     void Listen(int port, const char* ip = NULL)
     {
