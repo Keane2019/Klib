@@ -27,14 +27,14 @@ public:
                 list_.pop_back();
                 map_.erase(last);
             }
-            list_.push_front({k, v});
+            list_.emplace_front(k, v);
             map_[k] = list_.begin();
         }
         else
         {
             INDEX li = map_[k];
             list_.erase(li);
-            list_.push_front({k, v});
+            list_.emplace_front(k, v);
             map_[k] = list_.begin();
         }
     }
@@ -49,7 +49,7 @@ public:
             if(li != list_.begin())
             {
                 list_.erase(li);
-                list_.push_front({k, v});
+                list_.emplace_front(k, v);
             }
 
             return true;
