@@ -4,6 +4,8 @@
 #include <unordered_map>
 #include <list>
 
+//KEY不可使用自定义类型
+//因unordered_map需要自定义类型hash
 template<typename KEY, typename VAL>
 class BoundedCache
 {
@@ -23,20 +25,36 @@ public:
         {
             if(list_.size() == maxSize_)
             {
-                KEY last = list_.back().first;
+                map_.erase(list_.back().first);
                 list_.pop_back();
-                map_.erase(last);
             }
-            list_.emplace_front(k, v);
-            map_[k] = list_.begin();
         }
         else
         {
-            INDEX li = map_[k];
-            list_.erase(li);
-            list_.emplace_front(k, v);
-            map_[k] = list_.begin();
+            list_.erase(map_[k]);
         }
+
+        list_.emplace_front(k, v);
+        map_[k] = list_.begin();
+    }
+
+    void Put(KEY&& k, VAL&& v)
+    {
+        if(map_.find(k) == map_.end())
+        {
+            if(list_.size() == maxSize_)
+            {
+                map_.erase(list_.back().first);
+                list_.pop_back();
+            }
+        }
+        else
+        {
+            list_.erase(map_[k]);
+        }
+
+        list_.emplace_front(k, std::forward<VAL>(v));
+        map_.emplace(std::forward<KEY>(k), list_.begin());
     }
 
     bool Get(const KEY& k, VAL& v)
@@ -50,6 +68,7 @@ public:
             {
                 list_.erase(li);
                 list_.emplace_front(k, v);
+                map_[k] = list_.begin();
             }
 
             return true;
