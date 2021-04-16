@@ -23,7 +23,7 @@ public:
     void Put(T&& x)
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        queue_.push_back(std::move(x));
+        queue_.push_back(std::forward<T>(x));
         cond_.notify_one();
     }
 

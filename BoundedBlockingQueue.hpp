@@ -17,7 +17,7 @@ public:
 	{
 		std::unique_lock<std::mutex> lock(mutex_);
 		notFull_.wait(lock, [this]{ return queue_.size() != maxSize_;});
-		queue_.push_back(std::move(x));
+		queue_.push_back(std::forward<T>(x));
 		notEmpty_.notify_one();
 	}
 
