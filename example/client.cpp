@@ -2,19 +2,29 @@
 #include<unistd.h>
 #include "../EventPoll.hpp"
 
-bool stop = false;
+MutexLock mtx;
+Condition cond(mtx);
+
 void sigHandle(int sig)
 {
     printf("SIGNAL: %d\n", sig);
-    stop = true;
+    cond.Notify();
 }
 
-int recved = 0;
-int sent = 0;
+const char* msg = "hello";
+int len = strlen(msg);
 
-void Echo()
+void SendMsg(WeakFile& ef)
 {
-    printf("Echo\n");
+    SharedFile sef = ef.lock();
+    if(sef)
+    {
+        sef->Send(msg, len);
+    }
+    else
+    {
+        printf("Connection lost\n");
+    }
 }
 
 int main(int argc,const char* argv[])
@@ -25,25 +35,17 @@ int main(int argc,const char* argv[])
 
     {
         EventPoll ep;
-        WeakFile ef = ep.Connect(8000, "127.0.0.1");
-        const char* msg = "hello";
-        int len = strlen(msg);
-    
-        while(!stop)
+        int soc = EventFile::ConnectServer(8000, "127.0.0.1", 10);
+
+        if(soc < 0)
         {
-            SharedFile sef = ef.lock();
-            if(sef)
-            {
-                sef->Send(msg, len);
-                sent += len;
-                printf("R:%d S:%d\n", recved, sent);
-            }
-            else
-            {
-                printf("Connection lost\n");
-                break;
-            }
+            printf("connect error\n");
+            return -1;
         }
+
+        WeakFile ef = ep.RegisterSocketInQueue(soc);
+        ep.RunEvery(std::bind(&SendMsg, ef), 3);
+        cond.Wait();
     }
 
 

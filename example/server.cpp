@@ -3,18 +3,34 @@
 
 #include "../EventPoll.hpp"
 
-bool stop = false;
+MutexLock mtx;
+Condition cond(mtx);
 
 void sigHandle(int sig)
 {
     printf("SIGNAL: %d\n", sig);
-    stop = true;
+    cond.Notify();
 }
 
-void MyMessageCallback(EventFile* ef)
+class MyServer : public EventThreadPool
 {
-    ef->readBuffer_.Clean();
-}
+public:
+    MyServer():EventThreadPool(1)
+    {
+        SetBufferSize(2048, 2048);
+        MessageCallback cb = MyServer::MyMessageCallback;
+        SetMessageCallback(cb);
+    }
+
+    static void MyMessageCallback(EventFile* ef)
+    {
+        PRINTCALL;
+        static int sum = 0;
+        sum += ef->readBuffer_.Size();
+        ef->readBuffer_.Clean();
+        PRINTCNT("recved", sum);
+    }
+};
 
 int main(int argc,const char* argv[])
 {
@@ -23,14 +39,9 @@ int main(int argc,const char* argv[])
     signal(SIGINT, sigHandle);
 
     {
-        //EventThreadPool ep(1, MyMessageCallback);
-        EventThreadPool ep(1);
-        ep.Listen(8000);
-
-        while(!stop)
-        {
-            sleep(1);
-        }
+        MyServer server;
+        server.Listen(8000);
+        cond.Wait();
     }
     
     return 0;
