@@ -50,11 +50,14 @@ struct EventFile
     EventCallback closeCallback_;
     MessageCallback messageCallback_;
 
-    EventFile(int fd, int waitEvents = EPOLLIN, int epollCtl = EPOLL_CTL_ADD)
+    EventFile(int fd, int readBuffSize = 0, int writeBuffSize = 0, 
+        int waitEvents = EPOLLIN, int epollCtl = EPOLL_CTL_ADD)
     :fd_(fd)
     ,readyEvents_(0)
     ,waitEvents_(waitEvents)
     ,epollCtl_(epollCtl)
+    ,readBuffer_(readBuffSize)
+    ,writeBuffer_(writeBuffSize)
     {
         PRINTCALL;
     }
@@ -111,7 +114,7 @@ struct EventFile
     void HandleRead()
     {
         PRINTCALL;
-        int read_once = readBuffer_.ReadFD(fd_, RING_BUFF_SIZE);
+        int read_once = readBuffer_.ReadFD(fd_, readBuffer_.Capacity());
 
         if(read_once == 0)
         {
@@ -132,7 +135,11 @@ struct EventFile
     void HandleWrite()
     {
         PRINTCALL;
-        writeBuffer_.WriteFD(fd_, RING_BUFF_SIZE);
+        int write_once = writeBuffer_.WriteFD(fd_, writeBuffer_.Capacity());
+
+        static int sum = 0;
+        sum += write_once;
+        PRINTCNT("sent", sum);
         
         if(writeBuffer_.Size() > 0)
         {
@@ -189,7 +196,7 @@ struct EventFile
         return sockfd;
     }
 
-    static int ConnectServer(int port, const char* ip)
+    static int ConnectServer(int port, const char* ip, int timeout)
     {
         int sockfd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
         if(sockfd < 0) abort();
@@ -198,11 +205,15 @@ struct EventFile
         remote.sin_family = AF_INET;
         remote.sin_port = htons(port);
         if(inet_pton(AF_INET, ip, &remote.sin_addr) != 1) abort();
-        unsigned int usec = 100000; //0.1S
+        unsigned int usec = 250000; //0.25S
+        unsigned int timeSpent = 0;
         
-        while(::connect(sockfd, (struct sockaddr*)&remote, sizeof(remote)) < 0)
+        while(::connect(sockfd, (struct sockaddr*)&remote, sizeof(remote)) < 0
+            && errno != 106)
         {
             usleep(usec);
+            timeSpent += usec;
+            if((timeout > 0) && (timeSpent >= (unsigned int)timeout * 1000000)) return -1;
             if(usec < 10000000) usec *= 2;
         }
 
@@ -238,6 +249,7 @@ struct EventFile
 using Functor = std::function<void()>;
 using SharedFile = std::shared_ptr<EventFile>;
 using WeakFile = std::weak_ptr<EventFile>;
+#define DEFAULT_BUFFER_SIZE 1024
 
 class EventPoll
 {
@@ -245,6 +257,8 @@ public:
     EventPoll(MessageCallback cb = EventPoll::defaultMessageCallback)
     :epollFd_(::epoll_create1(EPOLL_CLOEXEC))
     ,wakeupFd_(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC))
+    ,readBufferSize_(DEFAULT_BUFFER_SIZE)
+    ,writeBufferSize_(DEFAULT_BUFFER_SIZE)
     ,quit_(false)
     ,events_(eventSize_)
     ,messageCallback_(cb)
@@ -258,12 +272,18 @@ public:
         thread_ = std::move(std::thread(&EventPoll::Loop, this));
     }
 
-    ~EventPoll()
+    virtual ~EventPoll()
     {
         quit_ = true;
         Wakeup();
         thread_.join();
         ::close(epollFd_);
+    }
+
+    void SetBufferSize(unsigned int readBufferSize, unsigned int writeBufferSize)
+    {
+        readBufferSize_ = readBufferSize;
+        writeBufferSize_ = writeBufferSize;
     }
 
     void SetMessageCallback(MessageCallback& cb)
@@ -299,15 +319,10 @@ public:
         AddEventsInQueue(ef);
     }
 
-    WeakFile Connect(int port, const char* ip)
-    {
-        int connfd = EventFile::ConnectServer(port, ip);
-        return RegisterSocketInQueue(connfd);
-    }
-
     WeakFile RegisterSocketInQueue(int fd)
     {
-        SharedFile ef = std::make_shared<EventFile>(fd);
+        SharedFile ef = std::make_shared<EventFile>(fd, 
+            readBufferSize_, writeBufferSize_);
         EventFile* pef = ef.get();
         ef->readCallback_ = std::move(
             std::bind(&EventFile::HandleRead, pef));
@@ -326,6 +341,8 @@ public:
             this, ef);
     }
 
+private:
+
     static void defaultMessageCallback(EventFile* ef)
     {
         static int sum = 0;
@@ -334,7 +351,6 @@ public:
         PRINTCNT("recved", sum);
     }
 
-private:
     void UpdateEventsInLoop(EventFile* ef)
     {
         if(ef->epollCtl_ != 0)
@@ -431,6 +447,8 @@ private:
 
     int epollFd_;
     int wakeupFd_;
+    unsigned int readBufferSize_;
+    unsigned int writeBufferSize_;
     bool quit_;
     EventList events_;
     std::thread thread_;
@@ -444,11 +462,21 @@ private:
 class EventThreadPool
 {
 public:
-    EventThreadPool(int size = std::thread::hardware_concurrency(),
-            MessageCallback cb = EventPoll::defaultMessageCallback)
-    :poolSize_(size)
+    EventThreadPool(int threadCount = std::thread::hardware_concurrency())
+    :poolSize_(threadCount)
     ,index_(0)
     ,pool_(poolSize_)
+    {}
+
+    void SetBufferSize(unsigned int readBufferSize, unsigned int writeBufferSize)
+    {
+        for(auto& ep : pool_)
+        {
+            ep.SetBufferSize(readBufferSize, writeBufferSize);
+        }
+    }
+
+    void SetMessageCallback(MessageCallback& cb)
     {
         for(auto& ep : pool_)
         {
@@ -466,12 +494,6 @@ public:
         ep.AddEventsInQueue(ef);
     }
 
-private:
-    WeakFile RegisterSocket(int fd)
-    {
-        return SelectEventPoll().RegisterSocketInQueue(fd);
-    }
-
     EventPoll& SelectEventPoll()
     {
         MutexLockGuard lock(mutex_);
@@ -479,6 +501,12 @@ private:
         return pool_[index_];
     }
 
+    WeakFile RegisterSocket(int fd)
+    {
+        return SelectEventPoll().RegisterSocketInQueue(fd);
+    }
+
+private:
     void HandleAccept(EventFile* ef)
     {
         int connfd = ::accept4(ef->fd_, NULL,

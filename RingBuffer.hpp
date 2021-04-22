@@ -8,8 +8,6 @@
 #include "LockUtils.hpp"
 
 #define MIN(x, y) x<y?x:y
-#define RING_BUFF_SIZE 65536
-
 
 class RingBuffer
 {
@@ -27,7 +25,7 @@ private: //make it noncopyable
     RingBuffer& operator=(const RingBuffer& rhs);
 
 public:
-    RingBuffer(int nSize = RING_BUFF_SIZE)
+    RingBuffer(unsigned int nSize)
     :buffer_(NULL)
     ,size_(nSize)
     ,in_(0)
@@ -36,17 +34,20 @@ public:
     ,not_empty_(mutex_)
     ,not_full_(mutex_)
     {
-        if (!IsPowerOf2(nSize))
+        if(size_)
         {
-            size_ = RoundupPowerOfTwo(nSize);
-        }
+            if (!IsPowerOf2(size_))
+            {
+                size_ = RoundupPowerOfTwo(size_);
+            }
 
-        buffer_ = new char[size_];
+            buffer_ = new char[size_];
+        }
     }
 
     ~RingBuffer()
     {
-        delete[] buffer_;
+        if(buffer_) delete[] buffer_;
     }
  
     int Put(const char *buffer, unsigned int len)
@@ -181,6 +182,11 @@ public:
     { 
         MutexLockGuard lock(mutex_);
         return size_ - in_ + out_; 
+    }
+
+    unsigned int Capacity()
+    {
+        return size_;
     }
 
 protected:
