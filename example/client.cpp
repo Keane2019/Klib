@@ -11,21 +11,48 @@ void sigHandle(int sig)
     cond.Notify();
 }
 
-const char* msg = "hello";
-int len = strlen(msg);
-
-void SendMsg(WeakFile& ef)
+class MyClient : public EventPoll
 {
-    SharedFile sef = ef.lock();
-    if(sef)
+public:
+    MyClient() : EventPoll()
+    ,len_(strlen(msg_))
+    {}
+
+    bool Init()
     {
-        sef->Send(msg, len);
+        int soc = EventFile::ConnectServer(8000, "127.0.0.1", 10);
+
+        if(soc < 0)
+        {
+            printf("connect error\n");
+            return false;
+        }
+
+        ef_ = RegisterSocketInQueue(soc);
+        return true;
     }
-    else
+
+    void SendMsg()
     {
-        printf("Connection lost\n");
+        SharedFile sef = ef_.lock();
+        if(sef)
+        {
+            sef->Send(msg_, len_);
+        }
+        else
+        {
+            printf("Connection lost\n");
+        }
     }
-}
+
+private:
+    const char* msg_ = "hello";
+    int len_;
+    WeakFile ef_;
+};
+
+
+
 
 int main(int argc,const char* argv[])
 {
@@ -34,20 +61,16 @@ int main(int argc,const char* argv[])
     signal(SIGINT, sigHandle);
 
     {
-        EventPoll ep;
-        int soc = EventFile::ConnectServer(8000, "127.0.0.1", 10);
+        MyClient client;
 
-        if(soc < 0)
+        if(client.Init())
         {
-            printf("connect error\n");
-            return -1;
+            client.RunEvery(std::move(
+                std::bind(&MyClient::SendMsg, &client)), 3);
+            cond.Wait();
         }
 
-        WeakFile ef = ep.RegisterSocketInQueue(soc);
-        ep.RunEvery(std::bind(&SendMsg, ef), 3);
-        cond.Wait();
     }
-
 
     return 0;
 }

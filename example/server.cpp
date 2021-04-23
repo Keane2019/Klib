@@ -24,11 +24,10 @@ public:
 
     static void MyMessageCallback(EventFile* ef)
     {
-        PRINTCALL;
         static int sum = 0;
         sum += ef->readBuffer_.Size();
         ef->readBuffer_.Clean();
-        PRINTCNT("recved", sum);
+        PRINTCNT("my messaga recved", sum);
     }
 };
 

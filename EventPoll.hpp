@@ -468,6 +468,8 @@ public:
     ,pool_(poolSize_)
     {}
 
+    virtual ~EventThreadPool(){}
+
     void SetBufferSize(unsigned int readBufferSize, unsigned int writeBufferSize)
     {
         for(auto& ep : pool_)
