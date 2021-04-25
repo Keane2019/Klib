@@ -18,18 +18,19 @@
 #include <arpa/inet.h>
 
 #include "RingBuffer.hpp"
-#include "ObjectPool.hpp"
 
 #if 1
 #include <stdio.h>
 #define PRINTCALL printf("%s\n",__func__)
 #define PRINTERR printf("%s, %s\n",__func__, strerror(errno))
 #define PRINTCNT(str, x) printf("%s: %d\n",str, x)
+#define PRINTFD(fd, epctl) printf("FD %d -> EPOLL_CTL %d\n", fd, epctl);
 #define NDEBUG
 #else
 #define PRINTCALL
 #define PRINTERR
-#define PRINTCNT(str, x) 
+#define PRINTCNT(str, x)
+#define PRINTFD(fd, epctl) 
 #endif
 #include <assert.h>
 
@@ -135,11 +136,15 @@ struct EventFile
     void HandleWrite()
     {
         PRINTCALL;
-        int write_once = writeBuffer_.WriteFD(fd_, writeBuffer_.Capacity());
 
+#ifdef NDEBUG
+        int write_once = writeBuffer_.WriteFD(fd_, writeBuffer_.Capacity());
         static int sum = 0;
         sum += write_once;
         PRINTCNT("sent", sum);
+#else
+        writeBuffer_.WriteFD(fd_, writeBuffer_.Capacity());
+#endif
         
         if(writeBuffer_.Size() > 0)
         {
@@ -355,7 +360,8 @@ private:
     {
         if(ef->epollCtl_ != 0)
         {
-            printf("FD %d -> EPOLL_CTL %d\n", ef->fd_, ef->epollCtl_);
+            PRINTFD(ef->fd_, ef->epollCtl_);
+
             if(ef->epollCtl_ == EPOLL_CTL_DEL)
             {
                 MCHECK(::epoll_ctl(epollFd_, EPOLL_CTL_DEL, ef->fd_, nullptr));
@@ -374,7 +380,7 @@ private:
 
     void AddEventsInLoop(SharedFile& ef)
     {   
-        printf("FD %d -> EPOLL_CTL %d\n", ef->fd_, ef->epollCtl_);
+        PRINTFD(ef->fd_, ef->epollCtl_);
         struct epoll_event ev;
         ev.events = ef->waitEvents_;
         ev.data.ptr = ef.get();
