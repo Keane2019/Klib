@@ -25,14 +25,13 @@
 #define PRINTERR printf("%s, %s\n",__func__, strerror(errno))
 #define PRINTCNT(str, x) printf("%s: %d\n",str, x)
 #define PRINTFD(fd, epctl) printf("FD %d -> EPOLL_CTL %d\n", fd, epctl);
-#define NDEBUG
+#define EPDEBUG
 #else
 #define PRINTCALL
 #define PRINTERR
 #define PRINTCNT(str, x)
 #define PRINTFD(fd, epctl) 
 #endif
-#include <assert.h>
 
 struct EventFile;
 using MessageCallback = std::function<void(EventFile*)>;
@@ -137,7 +136,7 @@ struct EventFile
     {
         PRINTCALL;
 
-#ifdef NDEBUG
+#ifdef EPDEBUG
         int write_once = writeBuffer_.WriteFD(fd_, writeBuffer_.Capacity());
         static int sum = 0;
         sum += write_once;
@@ -324,6 +323,15 @@ public:
         AddEventsInQueue(ef);
     }
 
+    void Listen(int port, const char* ip = NULL)
+    {
+        int fd = EventFile::CreateListen(port, ip);
+        SharedFile ef = std::make_shared<EventFile>(fd);
+        ef->readCallback_ = std::move(
+            std::bind(&EventPoll::HandleAccept, this, ef.get()));
+        AddEventsInQueue(ef);
+    }
+
     WeakFile RegisterSocketInQueue(int fd)
     {
         SharedFile ef = std::make_shared<EventFile>(fd, 
@@ -347,6 +355,20 @@ public:
     }
 
 private:
+    void HandleAccept(EventFile* ef)
+    {
+        int connfd = ::accept4(ef->fd_, NULL,
+                        NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+
+        if(connfd > 0)
+        {
+            RegisterSocketInQueue(connfd);
+        }
+        else
+        {
+            PRINTERR;
+        }
+    }
 
     static void defaultMessageCallback(EventFile* ef)
     {
