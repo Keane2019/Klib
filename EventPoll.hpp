@@ -34,6 +34,7 @@
 #endif
 
 struct EventFile;
+class EventPoll;
 using MessageCallback = std::function<void(EventFile*)>;
 
 struct EventFile
@@ -49,6 +50,7 @@ struct EventFile
     EventCallback writeCallback_;
     EventCallback closeCallback_;
     MessageCallback messageCallback_;
+    EventPoll* host_;
 
     EventFile(int fd, int readBuffSize = 0, int writeBuffSize = 0, 
         int waitEvents = EPOLLIN, int epollCtl = EPOLL_CTL_ADD)
@@ -58,6 +60,7 @@ struct EventFile
     ,epollCtl_(epollCtl)
     ,readBuffer_(readBuffSize)
     ,writeBuffer_(writeBuffSize)
+    ,host_(nullptr)
     {
         PRINTCALL;
     }
@@ -305,7 +308,7 @@ public:
         Wakeup();
     }
 
-    void RunEvery(Functor cb, int interval, bool repeat = true)
+    WeakFile RunEvery(Functor cb, int interval, bool repeat = true)
     {
         int timerfd = EventFile::CreateTimer(interval, repeat);
         SharedFile ef = std::make_shared<EventFile>(timerfd);
@@ -318,16 +321,16 @@ public:
                 pef->waitEvents_ = 0;
                 pef->epollCtl_ = EPOLL_CTL_DEL;
             });
-        AddEventsInQueue(ef);
+        return AddEventsInQueue(ef);
     }
 
-    void Listen(int port, const char* ip = NULL)
+    WeakFile Listen(int port, const char* ip = NULL)
     {
         int fd = EventFile::CreateListen(port, ip);
         SharedFile ef = std::make_shared<EventFile>(fd);
         ef->readCallback_ = std::move(
             std::bind(&EventPoll::HandleAccept, this, ef.get()));
-        AddEventsInQueue(ef);
+        return AddEventsInQueue(ef);
     }
 
     WeakFile Connect(int port, const char* ip)
@@ -380,14 +383,20 @@ public:
         ef->closeCallback_ = std::move(
             std::bind(&EventFile::HandleClose, pef));
         ef->messageCallback_ = messageCallback_;
-        AddEventsInQueue(ef);
-        return ef;
+        return AddEventsInQueue(ef);
     }
 
-    void AddEventsInQueue(SharedFile& ef)
+    void ReleaseFile(SharedFile& ef)
+    {
+        Run(&EventPoll::RemoveEventsInLoop, 
+            this, ef);
+    }
+
+    WeakFile AddEventsInQueue(SharedFile& ef)
     {
         Run(&EventPoll::AddEventsInLoop, 
             this, ef);
+        return ef;
     }
 
 private:
@@ -444,7 +453,15 @@ private:
         ev.data.ptr = ef.get();
         MCHECK(::epoll_ctl(epollFd_, ef->epollCtl_, ef->fd_, &ev));
         ef->epollCtl_ = 0;
+        ef->host_ = this;
         eventFiles_[ef->fd_] = ef;
+    }
+
+    void RemoveEventsInLoop(SharedFile& ef)
+    {   
+        PRINTFD(ef->fd_, ef->epollCtl_);
+        MCHECK(::epoll_ctl(epollFd_, EPOLL_CTL_DEL, ef->fd_, nullptr));
+        eventFiles_.erase(ef->fd_);
     }
 
     void Loop()
@@ -550,14 +567,14 @@ public:
         }
     }
 
-    void Listen(int port, const char* ip = NULL)
+    WeakFile Listen(int port, const char* ip = NULL)
     {
         int fd = EventFile::CreateListen(port, ip);
         EventPoll& ep = SelectEventPoll();
         SharedFile ef = std::make_shared<EventFile>(fd);
         ef->readCallback_ = std::move(
             std::bind(&EventThreadPool::HandleAccept, this, ef.get()));
-        ep.AddEventsInQueue(ef);
+        return ep.AddEventsInQueue(ef);
     }
 
     WeakFile Connect(int port, const char* ip)
@@ -570,6 +587,11 @@ public:
         MutexLockGuard lock(mutex_);
         index_ = (index_ + 1) % poolSize_;
         return pool_[index_];
+    }
+
+    void ReleaseFile(SharedFile& ef)
+    {
+        ef->host_->ReleaseFile(ef);
     }
 
     WeakFile RegisterSocket(int fd)
