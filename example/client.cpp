@@ -51,10 +51,16 @@ int main(int argc,const char* argv[])
     {
         MyClient client;
 
-        client.RunEvery(std::move(
+        WeakFile task = client.RunEvery(std::move(
             std::bind(&MyClient::SendMsg, &client)), 3);
-        cond.Wait();
+        sleep(10);
 
+        {
+            SharedFile ef = task.lock();
+            client.ReleaseFile(ef);
+        }
+
+        cond.Wait();
     }
 
     return 0;
