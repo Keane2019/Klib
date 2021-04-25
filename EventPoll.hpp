@@ -163,6 +163,28 @@ struct EventFile
         }
     }
 
+    void HandleConnect()
+    {
+        PRINTCALL;
+
+        int result;
+	    socklen_t result_len = sizeof(result);
+	    
+        if (getsockopt(fd_, SOL_SOCKET, SO_ERROR, &result, &result_len) < 0)
+        {
+            HandleClose();
+            return;
+        }
+            
+	    if (result != 0)
+        {
+            HandleClose();
+            return;
+        }
+        
+        writeCallback_ = std::bind(&EventFile::HandleWrite, this);
+    }
+
     void HandleClose()
     {
         PRINTCALL;
@@ -197,30 +219,6 @@ struct EventFile
         
         MCHECK(::bind(sockfd,(struct sockaddr*)&local , sizeof(local)));
         MCHECK(::listen(sockfd, SOMAXCONN));
-        return sockfd;
-    }
-
-    static int ConnectServer(int port, const char* ip, int timeout)
-    {
-        int sockfd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-        if(sockfd < 0) abort();
-
-        struct sockaddr_in remote;
-        remote.sin_family = AF_INET;
-        remote.sin_port = htons(port);
-        if(inet_pton(AF_INET, ip, &remote.sin_addr) != 1) abort();
-        unsigned int usec = 250000; //0.25S
-        unsigned int timeSpent = 0;
-        
-        while(::connect(sockfd, (struct sockaddr*)&remote, sizeof(remote)) < 0
-            && errno != 106)
-        {
-            usleep(usec);
-            timeSpent += usec;
-            if((timeout > 0) && (timeSpent >= (unsigned int)timeout * 1000000)) return -1;
-            if(usec < 10000000) usec *= 2;
-        }
-
         return sockfd;
     }
 
@@ -332,13 +330,51 @@ public:
         AddEventsInQueue(ef);
     }
 
-    WeakFile RegisterSocketInQueue(int fd)
+    WeakFile Connect(int port, const char* ip)
+    {
+        int sockfd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        if(sockfd < 0) abort();
+
+        struct sockaddr_in remote;
+        remote.sin_family = AF_INET;
+        remote.sin_port = htons(port);
+        if(inet_pton(AF_INET, ip, &remote.sin_addr) != 1) abort();
+        
+        if(::connect(sockfd, (struct sockaddr*)&remote, sizeof(remote)) < 0)
+        {
+            if(errno != EINPROGRESS)
+            {
+                PRINTERR;
+                return WeakFile();
+            }
+            else
+            {
+                return RegisterSocketInQueue(sockfd, true);
+            }
+        }
+
+        return RegisterSocketInQueue(sockfd, false);
+    }
+
+    WeakFile RegisterSocketInQueue(int fd, bool connecting = false)
     {
         SharedFile ef = std::make_shared<EventFile>(fd, 
             readBufferSize_, writeBufferSize_);
         EventFile* pef = ef.get();
         ef->readCallback_ = std::move(
             std::bind(&EventFile::HandleRead, pef));
+
+        if(connecting)
+        {
+            ef->writeCallback_ = std::move(
+                std::bind(&EventFile::HandleConnect, pef));
+        }
+        else
+        {
+            ef->writeCallback_ = std::move(
+                std::bind(&EventFile::HandleWrite, pef));
+        }
+
         ef->writeCallback_ = std::move(
             std::bind(&EventFile::HandleWrite, pef));
         ef->closeCallback_ = std::move(
@@ -522,6 +558,11 @@ public:
         ef->readCallback_ = std::move(
             std::bind(&EventThreadPool::HandleAccept, this, ef.get()));
         ep.AddEventsInQueue(ef);
+    }
+
+    WeakFile Connect(int port, const char* ip)
+    {
+        return SelectEventPoll().Connect(port, ip);
     }
 
     EventPoll& SelectEventPoll()
