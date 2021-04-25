@@ -16,20 +16,8 @@ class MyClient : public EventPoll
 public:
     MyClient() : EventPoll()
     ,len_(strlen(msg_))
-    {}
-
-    bool Init()
     {
-        int soc = EventFile::ConnectServer(8000, "127.0.0.1", 10);
-
-        if(soc < 0)
-        {
-            printf("connect error\n");
-            return false;
-        }
-
-        ef_ = RegisterSocketInQueue(soc);
-        return true;
+        ef_ = Connect(8000, "127.0.0.1");
     }
 
     void SendMsg()
@@ -63,12 +51,9 @@ int main(int argc,const char* argv[])
     {
         MyClient client;
 
-        if(client.Init())
-        {
-            client.RunEvery(std::move(
-                std::bind(&MyClient::SendMsg, &client)), 3);
-            cond.Wait();
-        }
+        client.RunEvery(std::move(
+            std::bind(&MyClient::SendMsg, &client)), 3);
+        cond.Wait();
 
     }
 
